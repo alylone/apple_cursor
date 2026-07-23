@@ -6,6 +6,178 @@ Open source macOS Cursors for `Windows` and `Linux` with _HiDPI Support_ .
 
 [![Build](https://github.com/ful1e5/apple_cursor/workflows/build/badge.svg)](https://github.com/ful1e5/apple_cursor/actions?query=workflow%3Abuild)
 
+## Fork Purpose / 本 Fork 用途
+
+> This is the personal Windows-focused fork at
+> [`alylone/apple_cursor`](https://github.com/alylone/apple_cursor), based on
+> [`ful1e5/apple_cursor`](https://github.com/ful1e5/apple_cursor). The fork was
+> created to preserve the upstream macOS appearance while making cursor sizing
+> and the working-in-background behavior feel correct on a DPI-scaled Windows
+> desktop.
+
+这是一份面向 Windows 日常使用的个人留档。修改工作的基线是上游提交
+`fe044a42b4e9cea16ea762d2ed9004f6d7b35543`，主要适配环境如下：
+
+| Item | Target |
+| --- | --- |
+| Operating system | Windows 10/11 |
+| Display | 2560x1440 (2K), primarily 16:9; also suitable for 16:10 |
+| Display scaling | 125% (120 DPI) |
+| Windows cursor base size | 32 |
+| Recommended fork profile | `Balanced` |
+| Fork work recorded | 2026-07-23 |
+
+### Why this fork exists
+
+The upstream Regular Windows package uses nominal CUR resource sizes of
+22/32/43/64/86/171 pixels. Some entries contain PNG canvases larger than their
+nominal CUR dimensions. Windows chooses cursors by resource dimensions, so at
+125% scaling it can select larger artwork than intended. In practice, Regular
+can look closer to Large on a 2K display.
+
+This fork adds
+[`tools/New-CompactWindowsTheme.ps1`](./tools/New-CompactWindowsTheme.ps1) to
+build standard Windows resource canvases without changing the upstream cursor
+style. It produces independent schemes and does not overwrite or activate the
+upstream themes.
+
+| Profile | Artwork sizes | CUR canvas sizes | Purpose |
+| --- | --- | --- | --- |
+| `Compact` | 22/32/43/64/86/171 | 32/48/64/96/128/256 | Exact upstream Regular artwork, corrected resource selection |
+| `Balanced` | 27/40/54/81/108/216 | 32/48/64/96/128/256 | Recommended perceptual size for 2K at 125% scaling |
+
+`Compact` requires an extracted or installed upstream Regular Windows theme.
+Its default source is
+`C:\Windows\Cursors\macOS-Regular Cursors`; pass `-SourceDirectory` when the
+source exists elsewhere. `Balanced` is rebuilt directly from this repository's
+SVG sources and rendered PNGs.
+
+### Balanced Work.ani design
+
+The upstream `left_ptr_watch` artwork uses a reduced arrow and a blue
+four-section disc. This fork's Balanced `Work.ani` is composed during the
+Windows build instead of replacing the upstream SVG files:
+
+- The regular `left_ptr.png` is independently scaled exactly like
+  `Pointer.cur`; the arrow is not compressed as part of a combined image.
+- The six-blade gradient artwork from the repository's `wait-*.png` frames is
+  used as a separate foreground layer. No frames are copied from another
+  cursor package.
+- The composition is visually inspired by the working-in-background style in
+  [`antiden/macOS-cursors-for-Windows`](https://github.com/antiden/macOS-cursors-for-Windows),
+  while retaining this project's own shapes, gradients, pointer, and shadow.
+- At the 32-pixel Balanced size, `Pointer.cur` and every `Work.ani` frame use
+  hotspot `(8,4)`.
+- The pointer body ends at `x=18`; the visible color wheel occupies
+  `x=19...30, y=9...20`. The two elements are adjacent without covering each
+  other, and the wheel does not touch the canvas edge.
+- The wheel is the foreground layer. This is intentional: do not move it
+  behind the pointer, where the arrow would cut into the color disc.
+- `Work.ani` has 40 unique frames at 1 jiffy per frame, approximately 0.67
+  seconds per revolution.
+- `Busy.ani` remains the repository's standalone wait animation at 2 jiffies
+  per frame.
+
+### Maintenance invariants
+
+Future changes, including automated changes made by an AI coding agent, should
+preserve these decisions unless the fork owner explicitly requests otherwise:
+
+1. Keep the macOS visual style and upstream static SVG artwork intact.
+2. Keep Balanced Pointer artwork at 27 pixels on the 32-pixel Windows canvas.
+3. Build Work from the same independently scaled pointer used by Pointer.cur.
+4. Keep the Work pointer hotspot identical to Pointer.cur.
+5. Keep the Work color wheel on the right as a foreground layer, outside the
+   opaque pointer body, with no clipping at any rotation angle.
+6. Do not replace Work.ani with the ANI file from the reference repository.
+7. Keep generated themes independently installable; do not overwrite or
+   automatically activate another Windows cursor scheme.
+8. Treat `bitmaps/`, `themes/`, and `bin/` as generated output. They are ignored
+   by Git and must be rebuilt after a fresh clone.
+
+### Rebuild the recommended theme
+
+Run these commands from the repository root in PowerShell:
+
+```powershell
+npx cbmp render.json
+powershell -ExecutionPolicy Bypass -File tools/New-CompactWindowsTheme.ps1 -Profile Balanced
+```
+
+The result is written to:
+
+```text
+themes/macOS-Balanced-Windows
+```
+
+Install `themes/macOS-Balanced-Windows/install.inf`, then select
+`macOS-Balanced Cursors` in **Control Panel > Mouse > Pointers**. When replacing
+an already active build, switch to another scheme and apply it before switching
+back; Windows otherwise may continue displaying a cached ANI file.
+
+To rebuild Compact from a non-default source directory:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/New-CompactWindowsTheme.ps1 `
+  -Profile Compact `
+  -SourceDirectory 'D:\path\to\macOS-Regular Cursors'
+```
+
+### Publish a GitHub Release
+
+[`release-balanced-windows.yml`](./.github/workflows/release-balanced-windows.yml)
+builds and publishes the installable Balanced theme on a Windows GitHub-hosted
+runner. The workflow renders from the locked dependencies, builds the theme
+twice to check determinism, runs
+[`Test-BalancedWindowsTheme.ps1`](./tools/Test-BalancedWindowsTheme.ps1), and
+then creates a GitHub Release.
+
+A pushed `v*` tag publishes automatically:
+
+```bash
+git tag v2.0.1-balanced.1
+git push origin v2.0.1-balanced.1
+```
+
+The same workflow can be started from **Actions > Release Balanced Windows >
+Run workflow**. Enter a unique `v*` tag and optionally mark it as a prerelease.
+A manual run can create the tag at the selected branch commit. Re-running an
+existing release replaces its assets.
+
+Each release contains:
+
+- `apple-cursor-balanced-windows-<tag>.zip`, with the cursor files,
+  `install.inf`, this README, the license, and build metadata.
+- `apple-cursor-balanced-windows-<tag>.zip.sha256`, for archive verification.
+
+Releases appear at
+[`alylone/apple_cursor/releases`](https://github.com/alylone/apple_cursor/releases).
+The workflow declares `contents: write`. If release creation returns HTTP 403,
+check **Settings > Actions > General > Workflow permissions** for repository or
+organization restrictions on `GITHUB_TOKEN`.
+
+### Validation snapshot
+
+The archived Balanced build was checked with the following invariants:
+
+| Check | Result |
+| --- | --- |
+| Static cursor files | 19 |
+| ANI files | 2 (`Work.ani`, `Busy.ani`) |
+| Native Windows cursor loads | 21/21 passed |
+| Work frame count | 40/40, all unique |
+| Work canvas and hotspot | 32x32, `(8,4)` |
+| Pointer body preservation | 85/85 opaque pointer pixels preserved in every frame |
+| Work color-wheel bounds | `x=19...30, y=9...20` in every frame |
+| Work frame rate | 1 jiffy per frame |
+| Busy frame rate | 2 jiffies per frame |
+| Deterministic regeneration | Passed |
+| Archived Work.ani SHA-256 | `E9FC00E8189977ABAF72BD8A6511024023767F7A4CD8DCEB1CCE5B54502909AA` |
+
+The SHA-256 value records the build produced in the environment above. A
+different rasterizer or dependency version may legitimately change PNG
+encoding while preserving the pixel-level design invariants.
+
 ## Notes
 
 -   All cursor's SVG files are found in [svg](./svg) directory or you can also find them on [Figma](https://www.figma.com/file/OZw8Ylb9xPFw9h1uZYSMFa/apple_cursor?type=design&node-id=73%3A2&mode=design&t=dLILPgJJrLKeAcTE-1).
