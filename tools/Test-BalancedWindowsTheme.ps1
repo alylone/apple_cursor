@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
     [string]$ProjectRoot,
-    [string]$ThemeDirectory
+    [string]$ThemeDirectory,
+    [ValidateSet('Balanced', 'Balanced-Large')]
+    [string]$Profile = 'Balanced'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,8 +12,26 @@ Add-Type -AssemblyName System.Drawing
 if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
     $ProjectRoot = Split-Path -Parent $PSScriptRoot
 }
+
+if ($Profile -eq 'Balanced') {
+    $expectedSchemeName = 'macOS-Balanced Cursors'
+    $expectedHotspotX = 6
+    $expectedHotspotY = 3
+    $expectedOpaquePixels = 50
+    $expectedMinimumWheelColorPixels = 69
+    $expectedWheelBounds = @(16, 25, 7, 16)
+}
+else {
+    $expectedSchemeName = 'macOS-Balanced Large Cursors'
+    $expectedHotspotX = 8
+    $expectedHotspotY = 4
+    $expectedOpaquePixels = 85
+    $expectedMinimumWheelColorPixels = 85
+    $expectedWheelBounds = @(20, 30, 9, 19)
+}
+
 if ([string]::IsNullOrWhiteSpace($ThemeDirectory)) {
-    $ThemeDirectory = Join-Path $ProjectRoot 'themes\macOS-Balanced-Windows'
+    $ThemeDirectory = Join-Path $ProjectRoot "themes\macOS-$Profile-Windows"
 }
 $ThemeDirectory = [IO.Path]::GetFullPath($ThemeDirectory)
 
@@ -253,9 +273,9 @@ if (-not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
     throw "Installer not found: $installerPath"
 }
 $installer = Get-Content -LiteralPath $installerPath -Raw
-if ($installer -notmatch 'SCHEME_NAME="macOS-Balanced Cursors"' -or
-    $installer -notmatch 'CUR_DIR="Cursors\\macOS-Balanced Cursors"') {
-    throw 'Installer does not define the expected independent Balanced scheme.'
+if (-not $installer.Contains("SCHEME_NAME=`"$expectedSchemeName`"") -or
+    -not $installer.Contains("CUR_DIR=`"Cursors\$expectedSchemeName`"")) {
+    throw "Installer does not define the expected independent $Profile scheme."
 }
 
 $expectedCanvasSizes = @(32, 48, 64, 96, 128, 256)
@@ -289,9 +309,9 @@ foreach ($file in $staticFiles) {
 }
 
 if ($null -eq $pointerEntry -or
-    $pointerEntry.HotspotX -ne 8 -or
-    $pointerEntry.HotspotY -ne 4) {
-    throw 'The 32px Pointer.cur entry must use hotspot (8,4).'
+    $pointerEntry.HotspotX -ne $expectedHotspotX -or
+    $pointerEntry.HotspotY -ne $expectedHotspotY) {
+    throw "The 32px Pointer.cur entry must use hotspot ($expectedHotspotX,$expectedHotspotY)."
 }
 
 $pointerBitmap = New-BitmapFromPng $pointerEntry.Png
@@ -303,9 +323,9 @@ for ($y = 0; $y -lt 32; $y++) {
         }
     }
 }
-if ($pointerOpaqueCoordinates.Count -ne 85) {
+if ($pointerOpaqueCoordinates.Count -ne $expectedOpaquePixels) {
     $pointerBitmap.Dispose()
-    throw "Expected 85 opaque Pointer pixels, found $($pointerOpaqueCoordinates.Count)."
+    throw "Expected $expectedOpaquePixels opaque Pointer pixels, found $($pointerOpaqueCoordinates.Count)."
 }
 
 $work = Read-AniFile (Join-Path $ThemeDirectory 'Work.ani')
@@ -344,8 +364,8 @@ foreach ($frameBytes in $work.Frames) {
     $entry = $entries[0]
     if ($entry.Width -ne 32 -or
         $entry.Height -ne 32 -or
-        $entry.HotspotX -ne 8 -or
-        $entry.HotspotY -ne 4) {
+        $entry.HotspotX -ne $expectedHotspotX -or
+        $entry.HotspotY -ne $expectedHotspotY) {
         $pointerBitmap.Dispose()
         throw 'Work.ani frame dimensions or hotspot changed.'
     }
@@ -375,17 +395,17 @@ foreach ($frameBytes in $work.Frames) {
                 }
             }
         }
-        if ($colorX.Count -lt 90) {
+        if ($colorX.Count -lt $expectedMinimumWheelColorPixels) {
             throw "Work.ani color wheel is incomplete: $($colorX.Count) colored pixels."
         }
         $frameMinX = ($colorX | Measure-Object -Minimum).Minimum
         $frameMaxX = ($colorX | Measure-Object -Maximum).Maximum
         $frameMinY = ($colorY | Measure-Object -Minimum).Minimum
         $frameMaxY = ($colorY | Measure-Object -Maximum).Maximum
-        if ($frameMinX -lt 19 -or
-            $frameMaxX -gt 30 -or
-            $frameMinY -lt 9 -or
-            $frameMaxY -gt 20) {
+        if ($frameMinX -lt $expectedWheelBounds[0] -or
+            $frameMaxX -gt $expectedWheelBounds[1] -or
+            $frameMinY -lt $expectedWheelBounds[2] -or
+            $frameMaxY -gt $expectedWheelBounds[3]) {
             throw "Work.ani color wheel moved or clipped: $frameMinX,$frameMinY to $frameMaxX,$frameMaxY."
         }
         $globalMinX = [Math]::Min($globalMinX, $frameMinX)
@@ -437,7 +457,8 @@ $workHash = (Get-FileHash (Join-Path $ThemeDirectory 'Work.ani') -Algorithm SHA2
     NativeLoads = "$($expectedCursorNames.Count)/$($expectedCursorNames.Count)"
     WorkFrames = $work.Frames.Count
     UniqueWorkFrames = @($workHashes | Sort-Object -Unique).Count
-    PointerHotspot = '8,4'
+    Profile = $Profile
+    PointerHotspot = "$expectedHotspotX,$expectedHotspotY"
     PointerOpaquePixels = $pointerOpaqueCoordinates.Count
     WorkWheelBounds = "$globalMinX,$globalMinY to $globalMaxX,$globalMaxY"
     MinimumWheelColorPixels = $minimumColorPixels
@@ -446,4 +467,4 @@ $workHash = (Get-FileHash (Join-Path $ThemeDirectory 'Work.ani') -Algorithm SHA2
     WorkSha256 = $workHash
 } | Format-List
 
-Write-Output 'Balanced Windows theme validation passed.'
+Write-Output "$Profile Windows theme validation passed."

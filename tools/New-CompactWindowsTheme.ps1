@@ -4,7 +4,7 @@ param(
     [string]$SourceDirectory = 'C:\Windows\Cursors\macOS-Regular Cursors',
     [string]$BitmapDirectory,
     [string]$OutputDirectory,
-    [ValidateSet('Compact', 'Balanced')]
+    [ValidateSet('Compact', 'Balanced', 'Balanced-Large')]
     [string]$Profile = 'Compact'
 )
 
@@ -36,9 +36,22 @@ if ($Profile -eq 'Compact') {
         [pscustomobject]@{ Source = 171; Artwork = 171; Target = 256 }
     )
 }
-else {
+elseif ($Profile -eq 'Balanced') {
     $themeName = 'macOS-Balanced Cursors'
     $cursorDirectoryName = 'macOS-Balanced Cursors'
+    $animationArtworkSize = 22
+    $sizeMappings = @(
+        [pscustomobject]@{ Source = 22; Artwork = 22; Target = 32 }
+        [pscustomobject]@{ Source = 32; Artwork = 32; Target = 48 }
+        [pscustomobject]@{ Source = 43; Artwork = 43; Target = 64 }
+        [pscustomobject]@{ Source = 64; Artwork = 64; Target = 96 }
+        [pscustomobject]@{ Source = 86; Artwork = 86; Target = 128 }
+        [pscustomobject]@{ Source = 171; Artwork = 171; Target = 256 }
+    )
+}
+else {
+    $themeName = 'macOS-Balanced Large Cursors'
+    $cursorDirectoryName = 'macOS-Balanced Large Cursors'
     $animationArtworkSize = 27
     $sizeMappings = @(
         [pscustomobject]@{ Source = 32; Artwork = 27; Target = 32 }
@@ -580,10 +593,13 @@ function Convert-LayeredWorkAnimationFrame {
         [int]$ArtworkSize
     )
 
-    # At the 32px Balanced size, keep the foreground wheel one pixel beyond
-    # the regular pointer body and one pixel below its visual center.
-    $spinnerSize = [Math]::Round(0.46 * $ArtworkSize)
-    $spinnerX = [Math]::Round(180 * $ArtworkSize / 256)
+    # Leave one transparent pixel between the opaque pointer body and the
+    # foreground wheel, while clamping the wheel to the 32px canvas.
+    $spinnerSize = [Math]::Min(11, [Math]::Round(0.46 * $ArtworkSize))
+    $spinnerX = [Math]::Min(
+        32 - $spinnerSize,
+        [Math]::Round(180 * $ArtworkSize / 256) + 1
+    )
     $spinnerY = [Math]::Round(85 * $ArtworkSize / 256)
     $spinnerArguments = @{
         Png = $SpinnerPng

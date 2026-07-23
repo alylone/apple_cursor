@@ -50,28 +50,42 @@ jobs:
         shell: pwsh
         run: npx cbmp render.json
 
-      - name: Build Balanced theme deterministically
+      - name: Build Balanced themes deterministically
         shell: pwsh
         run: |
-          & .\tools\New-CompactWindowsTheme.ps1 -Profile Balanced
-          $firstHash = (Get-FileHash `
-            '.\themes\macOS-Balanced-Windows\Work.ani' `
-            -Algorithm SHA256).Hash
+          $profiles = @(
+            [pscustomobject]@{
+              Name = 'Balanced'
+              ThemeDirectory = '.\themes\macOS-Balanced-Windows'
+            }
+            [pscustomobject]@{
+              Name = 'Balanced-Large'
+              ThemeDirectory = '.\themes\macOS-Balanced-Large-Windows'
+            }
+          )
 
-          & .\tools\New-CompactWindowsTheme.ps1 -Profile Balanced
-          $secondHash = (Get-FileHash `
-            '.\themes\macOS-Balanced-Windows\Work.ani' `
-            -Algorithm SHA256).Hash
+          foreach ($profile in $profiles) {
+            & .\tools\New-CompactWindowsTheme.ps1 -Profile $profile.Name
+            $firstHash = (Get-FileHash `
+              (Join-Path $profile.ThemeDirectory 'Work.ani') `
+              -Algorithm SHA256).Hash
 
-          if ($firstHash -ne $secondHash) {
-            throw "Work.ani is not deterministic: $firstHash != $secondHash"
+            & .\tools\New-CompactWindowsTheme.ps1 -Profile $profile.Name
+            $secondHash = (Get-FileHash `
+              (Join-Path $profile.ThemeDirectory 'Work.ani') `
+              -Algorithm SHA256).Hash
+
+            if ($firstHash -ne $secondHash) {
+              throw "$($profile.Name) Work.ani is not deterministic: $firstHash != $secondHash"
+            }
+            Write-Output "$($profile.Name) deterministic Work.ani SHA-256: $secondHash"
           }
-          Write-Output "Deterministic Work.ani SHA-256: $secondHash"
 
-      - name: Validate Windows cursor package
+      - name: Validate Windows cursor packages
         shell: pwsh
         run: |
-          & .\tools\Test-BalancedWindowsTheme.ps1
+          & .\tools\Test-BalancedWindowsTheme.ps1 -Profile Balanced
+          & .\tools\Test-BalancedWindowsTheme.ps1 -Profile Balanced-Large
 
       - name: Package release files
         id: package
@@ -83,52 +97,75 @@ jobs:
             throw "Invalid release tag: $env:RELEASE_TAG"
           }
 
-          $assetStem = "apple-cursor-balanced-windows-$env:RELEASE_TAG"
           $distDirectory = Join-Path $PWD 'dist'
-          $stagingDirectory = Join-Path $distDirectory $assetStem
-          New-Item -ItemType Directory -Path $stagingDirectory -Force | Out-Null
+          New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
 
-          Copy-Item `
-            '.\themes\macOS-Balanced-Windows\*' `
-            $stagingDirectory `
-            -Recurse
-          Copy-Item '.\README.md' $stagingDirectory
-          Copy-Item '.\LICENSE' $stagingDirectory
+          function New-ReleasePackage {
+            param(
+              [string]$Profile,
+              [string]$ThemeDirectory,
+              [string]$AssetStem
+            )
 
-          @(
-            "Release: $env:RELEASE_TAG"
-            "Commit: $env:GITHUB_SHA"
-            "Workflow: $env:GITHUB_WORKFLOW"
-            "Build environment: windows-latest"
-            "Profile: Balanced"
-          ) | Set-Content `
-            -LiteralPath (Join-Path $stagingDirectory 'BUILD-INFO.txt') `
-            -Encoding UTF8
+            $stagingDirectory = Join-Path $distDirectory $AssetStem
+            New-Item -ItemType Directory -Path $stagingDirectory -Force | Out-Null
+            Copy-Item "$ThemeDirectory\*" $stagingDirectory -Recurse
+            Copy-Item '.\README.md' $stagingDirectory
+            Copy-Item '.\LICENSE' $stagingDirectory
 
-          $archivePath = Join-Path $distDirectory "$assetStem.zip"
-          Compress-Archive `
-            -Path $stagingDirectory `
-            -DestinationPath $archivePath `
-            -CompressionLevel Optimal
+            @(
+              "Release: $env:RELEASE_TAG"
+              "Commit: $env:GITHUB_SHA"
+              "Workflow: $env:GITHUB_WORKFLOW"
+              "Build environment: windows-latest"
+              "Profile: $Profile"
+            ) | Set-Content `
+              -LiteralPath (Join-Path $stagingDirectory 'BUILD-INFO.txt') `
+              -Encoding UTF8
 
-          $archiveHash = (Get-FileHash $archivePath -Algorithm SHA256).Hash
-          $checksumPath = "$archivePath.sha256"
-          "$archiveHash  $([IO.Path]::GetFileName($archivePath))" |
-            Set-Content -LiteralPath $checksumPath -Encoding UTF8
+            $archivePath = Join-Path $distDirectory "$AssetStem.zip"
+            Compress-Archive `
+              -Path $stagingDirectory `
+              -DestinationPath $archivePath `
+              -CompressionLevel Optimal
+
+            $archiveHash = (Get-FileHash $archivePath -Algorithm SHA256).Hash
+            $checksumPath = "$archivePath.sha256"
+            "$archiveHash  $([IO.Path]::GetFileName($archivePath))" |
+              Set-Content -LiteralPath $checksumPath -Encoding UTF8
+
+            Write-Host "Packaged $archivePath"
+            Write-Host "Archive SHA-256: $archiveHash"
+            return [pscustomobject]@{
+              Archive = $archivePath
+              Checksum = $checksumPath
+            }
+          }
+
+          $normalPackage = New-ReleasePackage `
+            -Profile 'Balanced' `
+            -ThemeDirectory '.\themes\macOS-Balanced-Windows' `
+            -AssetStem "apple-cursor-balanced-windows-$env:RELEASE_TAG"
+          $largePackage = New-ReleasePackage `
+            -Profile 'Balanced-Large' `
+            -ThemeDirectory '.\themes\macOS-Balanced-Large-Windows' `
+            -AssetStem "apple-cursor-balanced-large-windows-$env:RELEASE_TAG"
 
           "tag=$env:RELEASE_TAG" >> $env:GITHUB_OUTPUT
-          "archive=$archivePath" >> $env:GITHUB_OUTPUT
-          "checksum=$checksumPath" >> $env:GITHUB_OUTPUT
-          Write-Output "Packaged $archivePath"
-          Write-Output "Archive SHA-256: $archiveHash"
+          "normal_archive=$($normalPackage.Archive)" >> $env:GITHUB_OUTPUT
+          "normal_checksum=$($normalPackage.Checksum)" >> $env:GITHUB_OUTPUT
+          "large_archive=$($largePackage.Archive)" >> $env:GITHUB_OUTPUT
+          "large_checksum=$($largePackage.Checksum)" >> $env:GITHUB_OUTPUT
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: apple-cursor-balanced-windows-${{ steps.package.outputs.tag }}
           path: |
-            ${{ steps.package.outputs.archive }}
-            ${{ steps.package.outputs.checksum }}
+            ${{ steps.package.outputs.normal_archive }}
+            ${{ steps.package.outputs.normal_checksum }}
+            ${{ steps.package.outputs.large_archive }}
+            ${{ steps.package.outputs.large_checksum }}
           if-no-files-found: error
           retention-days: 30
 
@@ -137,11 +174,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.package.outputs.tag }}
-          ARCHIVE_PATH: ${{ steps.package.outputs.archive }}
-          CHECKSUM_PATH: ${{ steps.package.outputs.checksum }}
+          NORMAL_ARCHIVE_PATH: ${{ steps.package.outputs.normal_archive }}
+          NORMAL_CHECKSUM_PATH: ${{ steps.package.outputs.normal_checksum }}
+          LARGE_ARCHIVE_PATH: ${{ steps.package.outputs.large_archive }}
+          LARGE_CHECKSUM_PATH: ${{ steps.package.outputs.large_checksum }}
           PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease || false }}
         run: |
-          $assets = @($env:ARCHIVE_PATH, $env:CHECKSUM_PATH)
+          $assets = @(
+            $env:NORMAL_ARCHIVE_PATH,
+            $env:NORMAL_CHECKSUM_PATH,
+            $env:LARGE_ARCHIVE_PATH,
+            $env:LARGE_CHECKSUM_PATH
+          )
           $title = "Apple Cursor Balanced Windows $env:RELEASE_TAG"
 
           gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY 2>$null

@@ -24,7 +24,7 @@ Open source macOS Cursors for `Windows` and `Linux` with _HiDPI Support_ .
 | Display | 2560x1440 (2K), primarily 16:9; also suitable for 16:10 |
 | Display scaling | 125% (120 DPI) |
 | Windows cursor base size | 32 |
-| Recommended fork profile | `Balanced` |
+| Recommended fork profile | `Balanced` (Normal) |
 | Fork work recorded | 2026-07-23 |
 
 ### Why this fork exists
@@ -44,13 +44,22 @@ upstream themes.
 | Profile | Artwork sizes | CUR canvas sizes | Purpose |
 | --- | --- | --- | --- |
 | `Compact` | 22/32/43/64/86/171 | 32/48/64/96/128/256 | Exact upstream Regular artwork, corrected resource selection |
-| `Balanced` | 27/40/54/81/108/216 | 32/48/64/96/128/256 | Recommended perceptual size for 2K at 125% scaling |
+| `Balanced` (Normal) | 22/32/43/64/86/171 | 32/48/64/96/128/256 | Windows-default-sized artwork rebuilt from this repository's sources |
+| `Balanced-Large` | 27/40/54/81/108/216 | 32/48/64/96/128/256 | The former Balanced size, preserved as an independently installable large profile |
+
+Compact and Balanced Normal intentionally share the same static artwork sizes.
+On the standard 32-pixel resource, the Balanced pointer's visible bounds are
+13x20 pixels, compared with 12x19 pixels for the Windows default pointer.
+Balanced remains the recommended profile because it is rebuilt from the SVG
+sources and uses the custom layered Work animation described below.
+`Balanced-Large` preserves the fork's previous, approximately 25% larger
+appearance.
 
 `Compact` requires an extracted or installed upstream Regular Windows theme.
 Its default source is
 `C:\Windows\Cursors\macOS-Regular Cursors`; pass `-SourceDirectory` when the
-source exists elsewhere. `Balanced` is rebuilt directly from this repository's
-SVG sources and rendered PNGs.
+source exists elsewhere. `Balanced` and `Balanced-Large` are rebuilt directly
+from this repository's SVG sources and rendered PNGs.
 
 ### Balanced Work.ani design
 
@@ -66,11 +75,13 @@ Windows build instead of replacing the upstream SVG files:
 - The composition is visually inspired by the working-in-background style in
   [`antiden/macOS-cursors-for-Windows`](https://github.com/antiden/macOS-cursors-for-Windows),
   while retaining this project's own shapes, gradients, pointer, and shadow.
-- At the 32-pixel Balanced size, `Pointer.cur` and every `Work.ani` frame use
-  hotspot `(8,4)`.
-- The pointer body ends at `x=18`; the visible color wheel occupies
-  `x=19...30, y=9...20`. The two elements are adjacent without covering each
-  other, and the wheel does not touch the canvas edge.
+- At the 32-pixel Balanced Normal size, `Pointer.cur` and every `Work.ani` frame
+  use hotspot `(6,3)`. Balanced Large uses `(8,4)`.
+- At Normal size, the opaque pointer body ends at `x=14` and the visible color
+  wheel occupies `x=16...25, y=7...16`, leaving `x=15` transparent. At Large
+  size, those bounds are `x=18` and `x=20...30, y=9...19`, leaving `x=19`
+  transparent and `x=31` clear. The wheel never covers the pointer or extends
+  beyond the canvas.
 - The wheel is the foreground layer. This is intentional: do not move it
   behind the pointer, where the arrow would cut into the color disc.
 - `Work.ani` has 40 unique frames at 1 jiffy per frame, approximately 0.67
@@ -84,7 +95,9 @@ Future changes, including automated changes made by an AI coding agent, should
 preserve these decisions unless the fork owner explicitly requests otherwise:
 
 1. Keep the macOS visual style and upstream static SVG artwork intact.
-2. Keep Balanced Pointer artwork at 27 pixels on the 32-pixel Windows canvas.
+2. Keep Balanced Normal Pointer artwork at 22 pixels on the 32-pixel Windows
+   canvas, matching the visible size of the default Windows pointer without
+   distorting the macOS artwork. Keep Balanced Large at the former 27 pixels.
 3. Build Work from the same independently scaled pointer used by Pointer.cur.
 4. Keep the Work pointer hotspot identical to Pointer.cur.
 5. Keep the Work color wheel on the right as a foreground layer, outside the
@@ -95,25 +108,29 @@ preserve these decisions unless the fork owner explicitly requests otherwise:
 8. Treat `bitmaps/`, `themes/`, and `bin/` as generated output. They are ignored
    by Git and must be rebuilt after a fresh clone.
 
-### Rebuild the recommended theme
+### Rebuild the Balanced themes
 
 Run these commands from the repository root in PowerShell:
 
 ```powershell
 npx cbmp render.json
 powershell -ExecutionPolicy Bypass -File tools/New-CompactWindowsTheme.ps1 -Profile Balanced
+powershell -ExecutionPolicy Bypass -File tools/New-CompactWindowsTheme.ps1 -Profile Balanced-Large
 ```
 
 The result is written to:
 
 ```text
 themes/macOS-Balanced-Windows
+themes/macOS-Balanced-Large-Windows
 ```
 
 Install `themes/macOS-Balanced-Windows/install.inf`, then select
-`macOS-Balanced Cursors` in **Control Panel > Mouse > Pointers**. When replacing
-an already active build, switch to another scheme and apply it before switching
-back; Windows otherwise may continue displaying a cached ANI file.
+`macOS-Balanced Cursors` for Normal size. Install the Large profile's
+`install.inf` and select `macOS-Balanced Large Cursors` for the former size.
+Both schemes can be installed at the same time. When replacing an already
+active build, switch to another scheme and apply it before switching back;
+Windows otherwise may continue displaying a cached ANI file.
 
 To rebuild Compact from a non-default source directory:
 
@@ -126,9 +143,9 @@ powershell -ExecutionPolicy Bypass -File tools/New-CompactWindowsTheme.ps1 `
 ### Publish a GitHub Release
 
 [`release-balanced-windows.yml`](./.github/workflows/release-balanced-windows.yml)
-builds and publishes the installable Balanced theme on a Windows GitHub-hosted
-runner. The workflow renders from the locked dependencies, builds the theme
-twice to check determinism, runs
+builds and publishes the installable Balanced Normal and Large themes on a
+Windows GitHub-hosted runner. The workflow renders from the locked
+dependencies, builds both themes twice to check determinism, runs
 [`Test-BalancedWindowsTheme.ps1`](./tools/Test-BalancedWindowsTheme.ps1), and
 then creates a GitHub Release.
 
@@ -146,9 +163,10 @@ existing release replaces its assets.
 
 Each release contains:
 
-- `apple-cursor-balanced-windows-<tag>.zip`, with the cursor files,
-  `install.inf`, this README, the license, and build metadata.
-- `apple-cursor-balanced-windows-<tag>.zip.sha256`, for archive verification.
+- `apple-cursor-balanced-windows-<tag>.zip`, containing the Normal theme.
+- `apple-cursor-balanced-large-windows-<tag>.zip`, containing the Large theme.
+- A matching `.sha256` file for each archive. Both ZIP files include the cursor
+  files, `install.inf`, this README, the license, and build metadata.
 
 Releases appear at
 [`alylone/apple_cursor/releases`](https://github.com/alylone/apple_cursor/releases).
@@ -158,21 +176,21 @@ organization restrictions on `GITHUB_TOKEN`.
 
 ### Validation snapshot
 
-The archived Balanced build was checked with the following invariants:
+Both Balanced profiles were checked with the following invariants:
 
-| Check | Result |
-| --- | --- |
-| Static cursor files | 19 |
-| ANI files | 2 (`Work.ani`, `Busy.ani`) |
-| Native Windows cursor loads | 21/21 passed |
-| Work frame count | 40/40, all unique |
-| Work canvas and hotspot | 32x32, `(8,4)` |
-| Pointer body preservation | 85/85 opaque pointer pixels preserved in every frame |
-| Work color-wheel bounds | `x=19...30, y=9...20` in every frame |
-| Work frame rate | 1 jiffy per frame |
-| Busy frame rate | 2 jiffies per frame |
-| Deterministic regeneration | Passed |
-| Archived Work.ani SHA-256 | `E9FC00E8189977ABAF72BD8A6511024023767F7A4CD8DCEB1CCE5B54502909AA` |
+| Check | Balanced (Normal) | Balanced-Large |
+| --- | --- | --- |
+| Static cursor files | 19 | 19 |
+| ANI files | 2 (`Work.ani`, `Busy.ani`) | 2 (`Work.ani`, `Busy.ani`) |
+| Native Windows cursor loads | 21/21 passed | 21/21 passed |
+| Work frame count | 40/40, all unique | 40/40, all unique |
+| Work canvas and hotspot | 32x32, `(6,3)` | 32x32, `(8,4)` |
+| Pointer body preservation | 50/50 opaque pixels | 85/85 opaque pixels |
+| Work color-wheel bounds | `x=16...25, y=7...16` | `x=20...30, y=9...19` |
+| Work frame rate | 1 jiffy per frame | 1 jiffy per frame |
+| Busy frame rate | 2 jiffies per frame | 2 jiffies per frame |
+| Deterministic regeneration | Passed | Passed |
+| Work.ani SHA-256 | `67AF77B240A2495D5E3719100192BE40411AB68D351A8ED673BD72C7F5127C64` | `1CCE5517446776506A9D876FFFE5BA23974F838F663FF0BB623AD3CB38C04423` |
 
 The SHA-256 value records the build produced in the environment above. A
 different rasterizer or dependency version may legitimately change PNG
