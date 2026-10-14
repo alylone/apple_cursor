@@ -66,19 +66,23 @@ jobs:
 
           foreach ($profile in $profiles) {
             & .\tools\New-CompactWindowsTheme.ps1 -Profile $profile.Name
-            $firstHash = (Get-FileHash `
-              (Join-Path $profile.ThemeDirectory 'Work.ani') `
-              -Algorithm SHA256).Hash
+            $firstHashes = @{}
+            foreach ($asset in @('Work.ani', 'Busy.ani')) {
+              $firstHashes[$asset] = (Get-FileHash `
+                (Join-Path $profile.ThemeDirectory $asset) `
+                -Algorithm SHA256).Hash
+            }
 
             & .\tools\New-CompactWindowsTheme.ps1 -Profile $profile.Name
-            $secondHash = (Get-FileHash `
-              (Join-Path $profile.ThemeDirectory 'Work.ani') `
-              -Algorithm SHA256).Hash
-
-            if ($firstHash -ne $secondHash) {
-              throw "$($profile.Name) Work.ani is not deterministic: $firstHash != $secondHash"
+            foreach ($asset in @('Work.ani', 'Busy.ani')) {
+              $secondHash = (Get-FileHash `
+                (Join-Path $profile.ThemeDirectory $asset) `
+                -Algorithm SHA256).Hash
+              if ($firstHashes[$asset] -ne $secondHash) {
+                throw "$($profile.Name) $asset is not deterministic."
+              }
+              Write-Output "$($profile.Name) deterministic $asset SHA-256: $secondHash"
             }
-            Write-Output "$($profile.Name) deterministic Work.ani SHA-256: $secondHash"
           }
 
       - name: Validate Windows cursor packages

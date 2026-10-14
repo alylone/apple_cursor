@@ -59,6 +59,16 @@ public sealed class WorkAnimationRenderer
         return Math.Max(0, Math.Min(255, (int)Math.Round(value)));
     }
 
+    public byte[] RenderBusy(int canvasSize, int artworkSize, double angleDegrees)
+    {
+        using (var canvas = new Bitmap(canvasSize, canvasSize, PixelFormat.Format32bppArgb))
+        using (var stream = new MemoryStream())
+        {
+            canvas.Save(stream, ImageFormat.Png);
+            return Render(stream.ToArray(), 0, 0, artworkSize, angleDegrees);
+        }
+    }
+
     public byte[] Render(byte[] pointerPng, int wheelX, int wheelY, int wheelSize,
                          double angleDegrees)
     {

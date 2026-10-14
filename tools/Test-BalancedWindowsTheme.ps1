@@ -361,9 +361,9 @@ if ($work.HeaderFrames -ne 60 -or $work.HeaderSteps -ne 60 -or
     throw 'Work ANI header must describe 60 multi-resolution frames at 1 jiffy.'
 }
 if ($busy.HeaderFrames -ne 40 -or $busy.HeaderSteps -ne 40 -or
-    $busy.Width -ne 32 -or $busy.Height -ne 32 -or $busy.Frames.Count -ne 40 -or
-    $busy.DefaultRate -ne 1) {
-    throw 'Busy ANI header must describe 40 32px frames at 2 jiffies.'
+    $busy.Width -ne 0 -or $busy.Height -ne 0 -or $busy.Frames.Count -ne 40 -or
+    $busy.DefaultRate -ne 2) {
+    throw 'Busy ANI header must describe 40 multi-resolution frames at 2 jiffies.'
 }
 if ($work.Rates.Count -ne 60 -or @($work.Rates | Where-Object { $_ -ne 1 }).Count -ne 0) {
     throw 'Work.ani must use 1 jiffy for all 60 frames.'
@@ -372,92 +372,73 @@ if ($busy.Rates.Count -ne 40 -or @($busy.Rates | Where-Object { $_ -ne 2 }).Coun
     throw 'Busy.ani must use 2 jiffies for all 40 frames.'
 }
 
-$workHashes = @{32 = @(); 48 = @(); 64 = @()}
-$firstAlphaMasks = @{}
-$minimumColorPixels = [int]::MaxValue
-$globalMinX = 31
-$globalMaxX = 0
-$globalMinY = 31
-$globalMaxY = 0
+$animationSizes = @(32, 48, 64, 96, 128, 256)
+$busyArtworkSizes = if ($Profile -eq 'Balanced') { @(22,32,43,64,86,171) } else { @(27,40,54,81,108,216) }
+if (-not ('CursorPixelInspector' -as [type])) {
+    $references = @(
+        [Drawing.Bitmap].Assembly.Location,
+        [Drawing.Color].Assembly.Location,
+        [Security.Cryptography.SHA256].Assembly.Location
+        [AppDomain]::CurrentDomain.GetAssemblies() |
+            Where-Object { $_.GetName().Name -like 'System.Private.Windows.*' } |
+            ForEach-Object Location
+    ) | Select-Object -Unique
+    Add-Type -Path (Join-Path $PSScriptRoot 'CursorPixelInspector.cs') -ReferencedAssemblies $references
+}
+$workInspectors = @{}; $busyInspectors = @{}
+for ($index = 0; $index -lt $animationSizes.Count; $index++) {
+    $size = $animationSizes[$index]; $scale = $size / 32.0
+    $wheelX = [int][Math]::Round($expectedWheelBounds[0] * $scale, [MidpointRounding]::AwayFromZero)
+    $wheelY = [int][Math]::Round($expectedWheelBounds[2] * $scale, [MidpointRounding]::AwayFromZero)
+    $wheelSize = [int][Math]::Round(($expectedWheelBounds[1] - $expectedWheelBounds[0] + 1) * $scale,
+        [MidpointRounding]::AwayFromZero)
+    $workInspectors[$size] = [CursorPixelInspector]::new($size, $wheelX, $wheelY, $wheelSize,
+        $pointerEntriesBySize[$size].Png)
+    $busyInspectors[$size] = [CursorPixelInspector]::new($size, 0, 0, $busyArtworkSizes[$index], $null)
+}
 foreach ($frameBytes in $work.Frames) {
     $entries = @(Read-CursorEntries $frameBytes)
-    Assert-EqualSequence @($entries.Width) @(32, 48, 64) 'Work frame canvas sizes'
+    Assert-EqualSequence @($entries.Width) $animationSizes 'Work frame canvas sizes'
     foreach ($entry in $entries) {
-        $size = $entry.Width
-        $reference = $pointerEntriesBySize[$size]
-        if ($entry.Height -ne $size -or $entry.HotspotX -ne $reference.HotspotX -or
+        $reference = $pointerEntriesBySize[$entry.Width]
+        if ($entry.Height -ne $entry.Width -or $entry.HotspotX -ne $reference.HotspotX -or
             $entry.HotspotY -ne $reference.HotspotY) {
             throw 'Work frame hotspot differs from its matching Pointer.cur entry.'
         }
-        $workHashes[$size] += Get-Sha256 $entry.Png
-        $scale = $size / 32.0
-        $wheelX = [int][Math]::Round($expectedWheelBounds[0] * $scale, [MidpointRounding]::AwayFromZero)
-        $wheelY = [int][Math]::Round($expectedWheelBounds[2] * $scale, [MidpointRounding]::AwayFromZero)
-        $wheelSize = [int][Math]::Round(($expectedWheelBounds[1] - $expectedWheelBounds[0] + 1) * $scale,
-            [MidpointRounding]::AwayFromZero)
-        $bitmap = New-BitmapFromPng $entry.Png
-        $pointerBitmap = New-BitmapFromPng $reference.Png
-        try {
-            if ($bitmap.Width -ne $size -or $bitmap.Height -ne $size) {
-                throw 'Work PNG dimensions differ from its directory entry.'
-            }
-            $alphaMask = [byte[]]::new($size * $size)
-            $colorX = @(); $colorY = @()
-            for ($y = 0; $y -lt $size; $y++) {
-                for ($x = 0; $x -lt $size; $x++) {
-                    $color = $bitmap.GetPixel($x, $y)
-                    $pointerColor = $pointerBitmap.GetPixel($x, $y)
-                    $insideWheelBox = $x -ge $wheelX -and $x -lt ($wheelX + $wheelSize) -and
-                        $y -ge $wheelY -and $y -lt ($wheelY + $wheelSize)
-                    if ((-not $insideWheelBox -or $pointerColor.A -eq 255) -and
-                        $color.ToArgb() -ne $pointerColor.ToArgb()) {
-                        throw "Work changed a pointer pixel at ${size}px ($x,$y)."
-                    }
-                    $alphaMask[$y * $size + $x] = $color.A
-                    $maximum = [Math]::Max($color.R, [Math]::Max($color.G, $color.B))
-                    $minimum = [Math]::Min($color.R, [Math]::Min($color.G, $color.B))
-                    if ($color.A -gt 32 -and ($maximum - $minimum) -gt 45) {
-                        if (-not $insideWheelBox) { throw 'The wheel extends outside its fixed bounds.' }
-                        $colorX += $x; $colorY += $y
-                    }
-                }
-            }
-            $maskHash = Get-Sha256 $alphaMask
-            if ($firstAlphaMasks.ContainsKey($size)) {
-                if ($firstAlphaMasks[$size] -ne $maskHash) { throw "Work alpha mask changes at ${size}px." }
-            }
-            else { $firstAlphaMasks[$size] = $maskHash }
-            if ($colorX.Count -lt ($expectedMinimumWheelColorPixels * $scale * $scale)) {
-                throw "Work color wheel is incomplete at ${size}px: $($colorX.Count) colored pixels."
-            }
-            if ($size -eq 32) {
-                $globalMinX = [Math]::Min($globalMinX, ($colorX | Measure-Object -Minimum).Minimum)
-                $globalMaxX = [Math]::Max($globalMaxX, ($colorX | Measure-Object -Maximum).Maximum)
-                $globalMinY = [Math]::Min($globalMinY, ($colorY | Measure-Object -Minimum).Minimum)
-                $globalMaxY = [Math]::Max($globalMaxY, ($colorY | Measure-Object -Maximum).Maximum)
-                $minimumColorPixels = [Math]::Min($minimumColorPixels, $colorX.Count)
-            }
-        }
-        finally {
-            $bitmap.Dispose(); $pointerBitmap.Dispose()
-        }
+        $workInspectors[$entry.Width].Inspect($entry.Png)
     }
 }
-
-foreach ($size in @(32, 48, 64)) {
-    if (@($workHashes[$size] | Sort-Object -Unique).Count -ne 60) {
-        throw "Work must contain 60 unique frames at ${size}px."
-    }
-}
-
 foreach ($frameBytes in $busy.Frames) {
     $entries = @(Read-CursorEntries $frameBytes)
-    if ($entries.Count -ne 1 -or
-        $entries[0].Width -ne 32 -or
-        $entries[0].Height -ne 32) {
-        throw 'Busy.ani contains an invalid frame.'
+    Assert-EqualSequence @($entries.Width) $animationSizes 'Busy frame canvas sizes'
+    for ($index = 0; $index -lt $entries.Count; $index++) {
+        $entry = $entries[$index]
+        $center = [int][Math]::Floor($busyArtworkSizes[$index] / 2.0)
+        if ($entry.Height -ne $entry.Width -or $entry.HotspotX -ne $center -or $entry.HotspotY -ne $center) {
+            throw 'Busy frame hotspot differs from its artwork center.'
+        }
+        $busyInspectors[$entry.Width].Inspect($entry.Png)
     }
 }
+for ($index = 0; $index -lt $animationSizes.Count; $index++) {
+    $size = $animationSizes[$index]
+    if ($workInspectors[$size].FrameCount -ne 60 -or $workInspectors[$size].UniqueFrames -ne 60) {
+        throw "Work must contain 60 unique frames at ${size}px."
+    }
+    if ($busyInspectors[$size].FrameCount -ne 40 -or $busyInspectors[$size].UniqueFrames -ne 40) {
+        throw "Busy must contain 40 unique frames at ${size}px."
+    }
+    if ($workInspectors[$size].MinimumColorPixels -lt ($expectedMinimumWheelColorPixels * ($size / 32.0) * ($size / 32.0))) {
+        throw "Work color wheel is incomplete at ${size}px."
+    }
+    $radius = $busyArtworkSizes[$index] * 110.72 / 256.0
+    if ($busyInspectors[$size].MinimumColorPixels -lt (0.8 * [Math]::PI * $radius * $radius)) {
+        throw "Busy color wheel is incomplete at ${size}px."
+    }
+}
+$globalMinX = $workInspectors[32].MinimumX; $globalMaxX = $workInspectors[32].MaximumX
+$globalMinY = $workInspectors[32].MinimumY; $globalMaxY = $workInspectors[32].MaximumY
+$minimumColorPixels = $workInspectors[32].MinimumColorPixels
 
 foreach ($assetName in $expectedCursorNames) {
     $assetPath = Join-Path $ThemeDirectory $assetName
@@ -507,14 +488,33 @@ function Read-NativeCursor {
     }
 }
 
+$requestedSizes = @(32,40,48,56,64,80,96,112,128,192,256)
+$nativeCache = @{}
+$matrixLoads = 0
+foreach ($size in $requestedSizes) {
+    foreach ($assetName in $expectedCursorNames) {
+        $image = Read-NativeCursor (Join-Path $ThemeDirectory $assetName) $size
+        if ($image.Width -ne $size -or $image.Height -ne $size -or
+            $image.HotspotX -ge $size -or $image.HotspotY -ge $size) {
+            throw "Native dimensions or hotspot invalid for $assetName at ${size}px."
+        }
+        if ($assetName -in @('Pointer.cur','Work.ani','Busy.ani')) {
+            $nativeCache["$assetName@$size"] = $image
+        }
+        $matrixLoads++
+    }
+}
+# Compare the ANI loader against an independent static load of its full first CUR frame.
+$fixtureDirectory = Join-Path $ProjectRoot 'bin\cursor-validation'
+[void](New-Item -ItemType Directory -Path $fixtureDirectory -Force)
+$busyReferencePath = Join-Path $fixtureDirectory "$Profile-Busy-first-frame.cur"
+[IO.File]::WriteAllBytes($busyReferencePath, $busy.Frames[0])
 $nativeSizes = @()
-foreach ($size in @(32, 40, 48, 64)) {
-    $pointer = Read-NativeCursor (Join-Path $ThemeDirectory 'Pointer.cur') $size
-    $animation = Read-NativeCursor (Join-Path $ThemeDirectory 'Work.ani') $size
-    if ($pointer.Width -ne $size -or $pointer.Height -ne $size -or
-        $animation.Width -ne $size -or $animation.Height -ne $size -or
-        $pointer.HotspotX -ne $animation.HotspotX -or $pointer.HotspotY -ne $animation.HotspotY) {
-        throw "Native Work and Pointer sizes or hotspots disagree at ${size}px."
+foreach ($size in $requestedSizes) {
+    $pointer = $nativeCache["Pointer.cur@$size"]
+    $animation = $nativeCache["Work.ani@$size"]
+    if ($pointer.HotspotX -ne $animation.HotspotX -or $pointer.HotspotY -ne $animation.HotspotY) {
+        throw "Native Work and Pointer hotspots disagree at ${size}px."
     }
     $pointerRegionWidth = [int][Math]::Floor($expectedWheelBounds[0] * $size / 32.0) - 1
     for ($y = 0; $y -lt $size; $y++) {
@@ -525,6 +525,13 @@ foreach ($size in @(32, 40, 48, 64)) {
             }
         }
     }
+    $busyImage = $nativeCache["Busy.ani@$size"]
+    $busyReference = Read-NativeCursor $busyReferencePath $size
+    if ($busyImage.HotspotX -ne $busyReference.HotspotX -or
+        $busyImage.HotspotY -ne $busyReference.HotspotY -or
+        (Get-Sha256 $busyImage.Pixels) -ne (Get-Sha256 $busyReference.Pixels)) {
+        throw "Native Busy animation differs from its matching static frame at ${size}px."
+    }
     $nativeSizes += "$size ($($animation.HotspotX),$($animation.HotspotY))"
 }
 
@@ -534,9 +541,13 @@ $workHash = (Get-FileHash (Join-Path $ThemeDirectory 'Work.ani') -Algorithm SHA2
     StaticCursors = $staticFiles.Count
     NativeLoads = "$($expectedCursorNames.Count)/$($expectedCursorNames.Count)"
     WorkFrames = $work.Frames.Count
-    UniqueWorkFramesPerSize = '60/60 at 32,48,64'
-    WorkCanvasSizes = '32,48,64'
-    FixedAlphaMasks = $firstAlphaMasks.Count
+    UniqueWorkFramesPerSize = '60/60 at all six sizes'
+    AnimationCanvasSizes = $animationSizes -join ','
+    FixedWorkAlphaMasks = $workInspectors.Count
+    FixedBusyAlphaMasks = $busyInspectors.Count
+    BusyFrames = $busy.Frames.Count
+    UniqueBusyFramesPerSize = '40/40 at all six sizes'
+    NativeMatrixLoads = "$matrixLoads/$matrixLoads"
     NativeSizeHotspots = $nativeSizes -join '; '
     Profile = $Profile
     PointerHotspot = "$expectedHotspotX,$expectedHotspotY"
@@ -546,7 +557,9 @@ $workHash = (Get-FileHash (Join-Path $ThemeDirectory 'Work.ani') -Algorithm SHA2
     WorkJiffies = 1
     WorkRevolutionSeconds = 1
     BusyJiffies = 2
+    BusyRevolutionSeconds = 40 * 2 / 60.0
     WorkSha256 = $workHash
+    BusySha256 = (Get-FileHash (Join-Path $ThemeDirectory 'Busy.ani') -Algorithm SHA256).Hash
 } | Format-List
 
 Write-Output "$Profile Windows theme validation passed."

@@ -61,13 +61,13 @@ Its default source is
 source exists elsewhere. `Balanced` and `Balanced-Large` are rebuilt directly
 from this repository's SVG sources and rendered PNGs.
 
-### Balanced Work.ani design
+### Balanced animated cursor design
 
 The upstream `left_ptr_watch` artwork uses a reduced arrow and a blue
 four-section disc. This fork's Balanced `Work.ani` is composed during the
 Windows build instead of replacing the upstream SVG files:
 
-- Every frame contains 32/48/64-pixel resources. Each resource reuses the
+- Every Work frame contains 32/48/64/96/128/256-pixel resources. Each resource reuses the
   matching `Pointer.cur` pixels and hotspot, including the antialiased outline
   and shadow. The pointer is never scaled again during composition.
 - The six-blade gradient artwork from `wait-01.png` is rotated around one
@@ -90,12 +90,19 @@ Windows build instead of replacing the upstream SVG files:
   frame: one second per revolution. This is slower than the previous
   40-frame, approximately 0.67-second animation while retaining 60 steps
   per second.
-- Windows-native loading at 32/40/48/64 pixels verifies both the hotspot
+- Windows-native loading at 32/40/48/56/64/80/96/112/128/192/256 pixels verifies both the hotspot
   and pointer-region pixels against `Pointer.cur`. In particular, the Large
   48-pixel hotspot is `(12,5)` for both states; the older single-size Work
   animation became `(12,6)` when enlarged.
-- `Busy.ani` remains the repository's standalone wait animation at 2 jiffies
-  per frame.
+- `Busy.ani` uses the same canonical six-blade wheel and fixed circular edge,
+  with 32/48/64/96/128/256-pixel resources. Its artwork stays at the profile's
+  original sizes (Normal: 22/32/43/64/86/171; Large: 27/40/54/81/108/216).
+  Its original timing is preserved: 40 frames at 2 jiffies per frame, about
+  1.33 seconds per revolution. Only the colors rotate; its alpha mask is
+  identical across all frames at each size.
+- Both animations cover the same six canvases as the static cursors. This
+  avoids enlarging a 32px Busy resource at 150% scaling, and prevents Work
+  hotspot differences when the cursor size exceeds 64px.
 
 ### Maintenance invariants
 
@@ -115,6 +122,8 @@ preserve these decisions unless the fork owner explicitly requests otherwise:
    automatically activate another Windows cursor scheme.
 8. Treat `bitmaps/`, `themes/`, and `bin/` as generated output. They are ignored
    by Git and must be rebuilt after a fresh clone.
+9. Keep Busy artwork sizes and its 40-frame/2-jiffy timing. Both animations
+   must pass native Windows loading at intermediate and large cursor sizes.
 
 ### Rebuild the Balanced themes
 
@@ -140,25 +149,26 @@ Both schemes can be installed at the same time. When replacing an already
 active build, switch to another scheme and apply it before switching back;
 Windows otherwise may continue displaying a cached ANI file.
 
-### Apply only the repaired Work animation on this computer
+### Apply the repaired animations on this computer
 
 For an existing matching Balanced Large scheme, run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File tools/Set-WorkCursorFix.ps1 -Profile Balanced-Large
+powershell -ExecutionPolicy Bypass -File tools/Set-WorkCursorFix.ps1 -Profile Balanced-Large -IncludeBusy
 ```
 
 Use `-Profile Balanced` for Normal. The script first verifies that the active
 pointer matches the selected build and runs the package validator. It then
 creates a fresh timestamped directory under
-`%LOCALAPPDATA%\apple_cursor\work-fix`, backs up the previous Work animation,
-Pointer cursor, registry settings and hashes, and saves a rollback script.
+`%LOCALAPPDATA%\apple_cursor\animation-fix`, backs up the previous Work and Busy
+animations, Pointer cursor, registry settings and hashes, and saves a rollback script.
 
-The repaired Work file lives in that user directory. An independent
-`(Work Fixed <timestamp>)` scheme retains the current cursor paths with only
-the Work slot changed. The script activates it, refreshes Windows cursors and
-checks the real system Arrow and Work dimensions and hotspots. If application
-fails, it restores the previous settings. Administrator access is not needed.
+The repaired animation files live in that user directory. An independent
+`(Animations Fixed <timestamp>)` scheme retains the current static cursor paths
+and updates Work and Busy. The script activates it, refreshes Windows cursors
+and checks the real system slots. If application fails, it restores the previous
+settings. Administrator access is not needed. Omitting `-IncludeBusy` retains
+the earlier Work-only behavior and its `work-fix` backup directory.
 
 To roll back, run `Restore-WorkCursor.ps1` inside the reported backup directory.
 Both scripts support `-WhatIf`. Keep the timestamped directory while the fixed
@@ -206,6 +216,10 @@ The workflow declares `contents: write`. If release creation returns HTTP 403,
 check **Settings > Actions > General > Workflow permissions** for repository or
 organization restrictions on `GITHUB_TOKEN`.
 
+The regular build workflow also validates both Balanced profiles on Windows
+for every source pull request and main/dev push. This includes both animations'
+determinism, all-frame pixel/alpha checks, and 231 native size loads per profile.
+
 ### Validation snapshot
 
 Both Balanced profiles were checked with the following invariants:
@@ -216,23 +230,30 @@ Both Balanced profiles were checked with the following invariants:
 | ANI files | 2 (`Work.ani`, `Busy.ani`) | 2 (`Work.ani`, `Busy.ani`) |
 | Native Windows cursor loads | 21/21 passed | 21/21 passed |
 | Work frame count | 60/60 per size, all unique | 60/60 per size, all unique |
-| Work canvases | 32/48/64 | 32/48/64 |
+| Work and Busy canvases | 32/48/64/96/128/256 | 32/48/64/96/128/256 |
 | Work 32px hotspot | `(6,3)` | `(8,4)` |
 | Native 48px Arrow/Work hotspot | `(10,4)` / `(10,4)` | `(12,5)` / `(12,5)` |
 | Pointer body preservation | 50/50 opaque pixels | 85/85 opaque pixels |
 | Work color-wheel bounds | `x=16...25, y=7...16` | `x=20...30, y=9...19` |
 | Work frame rate | 1 jiffy per frame | 1 jiffy per frame |
 | Work revolution | 1 second | 1 second |
-| Fixed alpha masks | All 60 frames, all 3 sizes | All 60 frames, all 3 sizes |
+| Fixed Work alpha masks | All 60 frames, all 6 sizes | All 60 frames, all 6 sizes |
+| Fixed Busy alpha masks | All 40 frames, all 6 sizes | All 40 frames, all 6 sizes |
+| Native size matrix | 231/231 passed | 231/231 passed |
 | Exact pointer preservation | All pixels outside the wheel and all opaque body pixels | All pixels outside the wheel and all opaque body pixels |
 | Busy frame rate | 2 jiffies per frame | 2 jiffies per frame |
+| Busy revolution | About 1.33 seconds | About 1.33 seconds |
 | Deterministic regeneration | Passed | Passed |
-| Work.ani SHA-256 | `06C9E26C643CDE5C6FCDC5292BB4044ED8C16469DF7367DC8C7D669E1BA5704B` | `1490AC3C6B691AD15BDBF9D5D154A8B291CEC1088E78982846BA50BCFBF2C9AF` |
+| Work.ani SHA-256 | `50DB44836DD428E7FB53493E8D9E0388DC39268DE003903500392974CCB65F92` | `FCDD29DA01B5D7F179ADF6FFCE5E287869E6ADDDF3B389E0A336653B1E6FFF54` |
+| Busy.ani SHA-256 | `188F0756B5EF75A92ADD6443AA225185E391DC615C22DC7E680E90DDD92FD3F6` | `E0B65D804691CD6AC4734D2FD655189E7E31CB21D708C7015D83AC6E85EA6509` |
 
 The SHA-256 value records the build produced in the environment above. A
 different rasterizer, dependency version or .NET runtime may change PNG
 encoding or rounded wheel color samples while preserving the validated
 pointer pixels, fixed alpha masks and layout invariants.
+
+The full-size validation above was also checked on a 2560x1600 display at
+150% scaling, with the Windows cursor base size at 32 and Balanced Large active.
 
 ## Notes
 

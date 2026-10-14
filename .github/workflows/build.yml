@@ -59,3 +59,34 @@ jobs:
 
       - name: Build
         run: yarn build
+
+  windows-balanced:
+    name: Validate Balanced Windows cursors
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install locked rendering dependencies
+        run: npx --yes yarn@1.22.22 install --frozen-lockfile --ignore-scripts
+      - name: Render bitmaps
+        run: npx cbmp render.json
+      - name: Build and validate both profiles
+        shell: pwsh
+        run: |
+          foreach ($profile in @('Balanced', 'Balanced-Large')) {
+            & .\tools\New-CompactWindowsTheme.ps1 -Profile $profile
+            $theme = ".\themes\macOS-$profile-Windows"
+            $hashes = @{}
+            foreach ($asset in @('Work.ani', 'Busy.ani')) {
+              $hashes[$asset] = (Get-FileHash (Join-Path $theme $asset)).Hash
+            }
+            & .\tools\New-CompactWindowsTheme.ps1 -Profile $profile
+            foreach ($asset in @('Work.ani', 'Busy.ani')) {
+              if ($hashes[$asset] -ne (Get-FileHash (Join-Path $theme $asset)).Hash) {
+                throw "$profile $asset is not deterministic."
+              }
+            }
+            & .\tools\Test-BalancedWindowsTheme.ps1 -Profile $profile
+          }
