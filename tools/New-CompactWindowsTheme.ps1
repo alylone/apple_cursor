@@ -586,55 +586,35 @@ function Convert-BitmapAnimationFrame {
 
 function Convert-LayeredWorkAnimationFrame {
     param(
-        [byte[]]$SpinnerPng,
-        [byte[]]$PointerPng,
-        [int]$ArtworkHotspotX,
-        [int]$ArtworkHotspotY,
+        [object]$Renderer,
+        [object[]]$PointerEntries,
+        [int]$FrameIndex,
+        [int]$FrameCount,
         [int]$ArtworkSize
     )
 
-    # Leave one transparent pixel between the opaque pointer body and the
-    # foreground wheel, while clamping the wheel to the 32px canvas.
-    $spinnerSize = [Math]::Min(11, [Math]::Round(0.46 * $ArtworkSize))
-    $spinnerX = [Math]::Min(
-        32 - $spinnerSize,
+    $baseSize = [Math]::Min(11, [Math]::Round(0.46 * $ArtworkSize))
+    $baseX = [Math]::Min(
+        32 - $baseSize,
         [Math]::Round(180 * $ArtworkSize / 256) + 1
     )
-    $spinnerY = [Math]::Round(85 * $ArtworkSize / 256)
-    $spinnerArguments = @{
-        Png = $SpinnerPng
-        CanvasWidth = 32
-        CanvasHeight = 32
-        DestinationX = $spinnerX
-        DestinationY = $spinnerY
-        DestinationWidth = $spinnerSize
-        DestinationHeight = $spinnerSize
-        SourceWidth = 256
-        SourceHeight = 256
-        Scale = $true
+    $baseY = [Math]::Round(85 * $ArtworkSize / 256)
+    $outputEntries = @()
+    foreach ($pointerEntry in $PointerEntries) {
+        $scale = $pointerEntry.Width / 32.0
+        $wheelX = [int][Math]::Round($baseX * $scale, [MidpointRounding]::AwayFromZero)
+        $wheelY = [int][Math]::Round($baseY * $scale, [MidpointRounding]::AwayFromZero)
+        $wheelSize = [int][Math]::Round($baseSize * $scale, [MidpointRounding]::AwayFromZero)
+        $outputEntries += [pscustomobject]@{
+            Width = $pointerEntry.Width
+            Height = $pointerEntry.Height
+            HotspotX = $pointerEntry.HotspotX
+            HotspotY = $pointerEntry.HotspotY
+            Png = $Renderer.Render($pointerEntry.Png, $wheelX, $wheelY, $wheelSize,
+                (360.0 * $FrameIndex / $FrameCount))
+        }
     }
-    $pointerArguments = @{
-        Png = $PointerPng
-        CanvasWidth = 32
-        CanvasHeight = 32
-        DestinationX = 0
-        DestinationY = 0
-        DestinationWidth = $ArtworkSize
-        DestinationHeight = $ArtworkSize
-        SourceWidth = 256
-        SourceHeight = 256
-        Scale = $true
-    }
-    $outputEntry = [pscustomobject]@{
-        Width = 32
-        Height = 32
-        HotspotX = $ArtworkHotspotX
-        HotspotY = $ArtworkHotspotY
-        Png = Merge-PngLayers `
-            (Convert-PngCanvas @pointerArguments) `
-            (Convert-PngCanvas @spinnerArguments)
-    }
-    return New-CursorBytes @($outputEntry)
+    return New-CursorBytes $outputEntries
 }
 
 function Convert-Animation {
@@ -763,28 +743,50 @@ function New-BitmapAnimation {
         [int]$ArtworkHotspotX,
         [int]$ArtworkHotspotY,
         [int]$ArtworkSize,
-        [string]$PointerPngPath,
+        [string]$PointerCursorPath,
         [ValidateRange(1, 60)]
         [int]$FrameJiffies = 2
     )
 
-    if ($FramePngFiles.Count -ne 40) {
+    $isWork = -not [string]::IsNullOrWhiteSpace($PointerCursorPath)
+    if (-not $isWork -and $FramePngFiles.Count -ne 40) {
         throw "Expected 40 animation PNGs, found $($FramePngFiles.Count)."
+    }
+    if ($isWork -and $FramePngFiles.Count -lt 1) {
+        throw 'The Work animation requires a canonical wheel PNG.'
+    }
+    $frameCount = if ($isWork) { 60 } else { $FramePngFiles.Count }
+    $canvasSize = if ($isWork) { 0 } else { 32 }
+    # Keep Busy.ani byte-for-byte compatible; its rate chunk already sets 2 jiffies.
+    $headerRate = if ($isWork) { $FrameJiffies } else { 1 }
+    if ($isWork) {
+        if (-not ('WorkAnimationRenderer' -as [type])) {
+            $drawingReferences = @(
+                [Drawing.Bitmap].Assembly.Location,
+                [Drawing.Color].Assembly.Location
+                # Newer PowerShell runtimes split GDI+ into additional assemblies.
+                [AppDomain]::CurrentDomain.GetAssemblies() |
+                    Where-Object { $_.GetName().Name -like 'System.Private.Windows.*' } |
+                    ForEach-Object Location
+            ) | Select-Object -Unique
+            Add-Type -Path (Join-Path $PSScriptRoot 'WorkAnimationRenderer.cs') `
+                -ReferencedAssemblies $drawingReferences
+        }
+        $renderer = [WorkAnimationRenderer]::new([IO.File]::ReadAllBytes($FramePngFiles[0]))
+        $pointerEntries = @(Read-CursorEntries ([IO.File]::ReadAllBytes($PointerCursorPath)) |
+            Where-Object Width -in @(32, 48, 64))
+        if ($pointerEntries.Count -ne 3) {
+            throw 'Work requires the 32px, 48px and 64px Pointer.cur entries.'
+        }
     }
 
     $frameListStream = [IO.MemoryStream]::new()
     try {
         $frameListStream.Write([Text.Encoding]::ASCII.GetBytes('fram'), 0, 4)
-        $pointerPng = if ([string]::IsNullOrWhiteSpace($PointerPngPath)) {
-            $null
-        }
-        else {
-            [IO.File]::ReadAllBytes($PointerPngPath)
-        }
-        foreach ($framePngPath in $FramePngFiles) {
-            if ($null -eq $pointerPng) {
+        for ($frameIndex = 0; $frameIndex -lt $frameCount; $frameIndex++) {
+            if (-not $isWork) {
                 $frameArguments = @{
-                    Png = [IO.File]::ReadAllBytes($framePngPath)
+                    Png = [IO.File]::ReadAllBytes($FramePngFiles[$frameIndex])
                     ArtworkHotspotX = $ArtworkHotspotX
                     ArtworkHotspotY = $ArtworkHotspotY
                     ArtworkSize = $ArtworkSize
@@ -793,10 +795,10 @@ function New-BitmapAnimation {
             }
             else {
                 $frameArguments = @{
-                    SpinnerPng = [IO.File]::ReadAllBytes($framePngPath)
-                    PointerPng = $pointerPng
-                    ArtworkHotspotX = $ArtworkHotspotX
-                    ArtworkHotspotY = $ArtworkHotspotY
+                    Renderer = $renderer
+                    PointerEntries = $pointerEntries
+                    FrameIndex = $frameIndex
+                    FrameCount = $frameCount
                     ArtworkSize = $ArtworkSize
                 }
                 $cursorFrame = Convert-LayeredWorkAnimationFrame @frameArguments
@@ -813,7 +815,7 @@ function New-BitmapAnimation {
     $headerStream = [IO.MemoryStream]::new()
     $headerWriter = [IO.BinaryWriter]::new($headerStream)
     try {
-        foreach ($value in @(36, 40, 40, 32, 32, 32, 1, 1, 1)) {
+        foreach ($value in @(36, $frameCount, $frameCount, $canvasSize, $canvasSize, 32, 1, $headerRate, 1)) {
             $headerWriter.Write([uint32]$value)
         }
         $headerWriter.Flush()
@@ -827,7 +829,7 @@ function New-BitmapAnimation {
     $rateStream = [IO.MemoryStream]::new()
     $rateWriter = [IO.BinaryWriter]::new($rateStream)
     try {
-        for ($index = 0; $index -lt 40; $index++) {
+        for ($index = 0; $index -lt $frameCount; $index++) {
             $rateWriter.Write([uint32]$FrameJiffies)
         }
         $rateWriter.Flush()
@@ -950,7 +952,7 @@ else {
         ArtworkHotspotX = [Math]::Floor(80 * $animationArtworkSize / 256)
         ArtworkHotspotY = [Math]::Floor(38 * $animationArtworkSize / 256)
         ArtworkSize = $animationArtworkSize
-        PointerPngPath = Join-Path $BitmapDirectory 'left_ptr.png'
+        PointerCursorPath = Join-Path $OutputDirectory 'Pointer.cur'
         FrameJiffies = 1
     }
     New-BitmapAnimation @workArguments
@@ -1005,4 +1007,5 @@ $installInf = $installInf.Replace('__THEME_NAME__', $themeName)
 Set-Content -LiteralPath (Join-Path $OutputDirectory 'install.inf') -Value $installInf -Encoding Ascii -NoNewline
 
 Write-Output "Generated $Profile Windows theme: $OutputDirectory"
-Write-Output "Static cursors: $staticFileCount; animation frames: 80"
+$totalAnimationFrames = if ($Profile -eq 'Compact') { 80 } else { 100 }
+Write-Output "Static cursors: $staticFileCount; animation frames: $totalAnimationFrames"

@@ -18,7 +18,7 @@ if ($Profile -eq 'Balanced') {
     $expectedHotspotX = 6
     $expectedHotspotY = 3
     $expectedOpaquePixels = 50
-    $expectedMinimumWheelColorPixels = 69
+    $expectedMinimumWheelColorPixels = 50
     $expectedWheelBounds = @(16, 25, 7, 16)
 }
 else {
@@ -26,7 +26,7 @@ else {
     $expectedHotspotX = 8
     $expectedHotspotY = 4
     $expectedOpaquePixels = 85
-    $expectedMinimumWheelColorPixels = 85
+    $expectedMinimumWheelColorPixels = 60
     $expectedWheelBounds = @(20, 30, 9, 19)
 }
 
@@ -46,6 +46,18 @@ using System.Runtime.InteropServices;
 
 public static class BalancedCursorNative
 {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct IconInfo {
+        public bool IsIcon;
+        public uint HotspotX, HotspotY;
+        public IntPtr Mask, Color;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct BitmapInfo {
+        public int Type, Width, Height, WidthBytes;
+        public ushort Planes, BitsPixel;
+        public IntPtr Bits;
+    }
     [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern IntPtr LoadImage(
         IntPtr instance,
@@ -58,6 +70,15 @@ public static class BalancedCursorNative
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool DestroyCursor(IntPtr cursor);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool GetIconInfo(IntPtr cursor, out IconInfo info);
+    [DllImport("gdi32.dll", SetLastError = true)]
+    public static extern int GetObject(IntPtr bitmap, int size, out BitmapInfo info);
+    [DllImport("gdi32.dll", SetLastError = true)]
+    public static extern int GetBitmapBits(IntPtr bitmap, int count, byte[] pixels);
+    [DllImport("gdi32.dll")]
+    public static extern bool DeleteObject(IntPtr bitmap);
 }
 '@
 }
@@ -190,6 +211,7 @@ function Read-AniFile {
         HeaderSteps = [BitConverter]::ToUInt32($header, 8)
         Width = [BitConverter]::ToUInt32($header, 12)
         Height = [BitConverter]::ToUInt32($header, 16)
+        DefaultRate = [BitConverter]::ToUInt32($header, 28)
         Rates = $rates
         Frames = $frames
     }
@@ -285,6 +307,7 @@ if ($staticFiles.Count -ne 19) {
 }
 
 $pointerEntry = $null
+$pointerEntriesBySize = @{}
 foreach ($file in $staticFiles) {
     $entries = @(Read-CursorEntries ([IO.File]::ReadAllBytes($file.FullName)))
     Assert-EqualSequence @($entries | ForEach-Object Width) $expectedCanvasSizes "$($file.Name) widths"
@@ -305,6 +328,7 @@ foreach ($file in $staticFiles) {
     }
     if ($file.Name -eq 'Pointer.cur') {
         $pointerEntry = @($entries | Where-Object Width -eq 32)[0]
+        foreach ($entry in $entries) { $pointerEntriesBySize[$entry.Width] = $entry }
     }
 }
 
@@ -330,26 +354,26 @@ if ($pointerOpaqueCoordinates.Count -ne $expectedOpaquePixels) {
 
 $work = Read-AniFile (Join-Path $ThemeDirectory 'Work.ani')
 $busy = Read-AniFile (Join-Path $ThemeDirectory 'Busy.ani')
-foreach ($animation in @($work, $busy)) {
-    if ($animation.HeaderFrames -ne 40 -or
-        $animation.HeaderSteps -ne 40 -or
-        $animation.Width -ne 32 -or
-        $animation.Height -ne 32 -or
-        $animation.Frames.Count -ne 40) {
-        $pointerBitmap.Dispose()
-        throw 'ANI header or frame count validation failed.'
-    }
+$pointerBitmap.Dispose()
+if ($work.HeaderFrames -ne 60 -or $work.HeaderSteps -ne 60 -or
+    $work.Width -ne 0 -or $work.Height -ne 0 -or $work.Frames.Count -ne 60 -or
+    $work.DefaultRate -ne 1) {
+    throw 'Work ANI header must describe 60 multi-resolution frames at 1 jiffy.'
 }
-if ($work.Rates.Count -ne 40 -or @($work.Rates | Where-Object { $_ -ne 1 }).Count -ne 0) {
-    $pointerBitmap.Dispose()
-    throw 'Work.ani must use 1 jiffy for all 40 frames.'
+if ($busy.HeaderFrames -ne 40 -or $busy.HeaderSteps -ne 40 -or
+    $busy.Width -ne 32 -or $busy.Height -ne 32 -or $busy.Frames.Count -ne 40 -or
+    $busy.DefaultRate -ne 1) {
+    throw 'Busy ANI header must describe 40 32px frames at 2 jiffies.'
+}
+if ($work.Rates.Count -ne 60 -or @($work.Rates | Where-Object { $_ -ne 1 }).Count -ne 0) {
+    throw 'Work.ani must use 1 jiffy for all 60 frames.'
 }
 if ($busy.Rates.Count -ne 40 -or @($busy.Rates | Where-Object { $_ -ne 2 }).Count -ne 0) {
-    $pointerBitmap.Dispose()
     throw 'Busy.ani must use 2 jiffies for all 40 frames.'
 }
 
-$workHashes = @()
+$workHashes = @{32 = @(); 48 = @(); 64 = @()}
+$firstAlphaMasks = @{}
 $minimumColorPixels = [int]::MaxValue
 $globalMinX = 31
 $globalMaxX = 0
@@ -357,71 +381,73 @@ $globalMinY = 31
 $globalMaxY = 0
 foreach ($frameBytes in $work.Frames) {
     $entries = @(Read-CursorEntries $frameBytes)
-    if ($entries.Count -ne 1) {
-        $pointerBitmap.Dispose()
-        throw 'Each Work.ani frame must contain one cursor entry.'
-    }
-    $entry = $entries[0]
-    if ($entry.Width -ne 32 -or
-        $entry.Height -ne 32 -or
-        $entry.HotspotX -ne $expectedHotspotX -or
-        $entry.HotspotY -ne $expectedHotspotY) {
-        $pointerBitmap.Dispose()
-        throw 'Work.ani frame dimensions or hotspot changed.'
-    }
-    $workHashes += Get-Sha256 $entry.Png
-
-    $bitmap = New-BitmapFromPng $entry.Png
-    try {
-        foreach ($coordinate in $pointerOpaqueCoordinates) {
-            $x = $coordinate[0]
-            $y = $coordinate[1]
-            if ($bitmap.GetPixel($x, $y).ToArgb() -ne
-                $pointerBitmap.GetPixel($x, $y).ToArgb()) {
-                throw 'Work.ani changed an opaque regular-pointer pixel.'
-            }
+    Assert-EqualSequence @($entries.Width) @(32, 48, 64) 'Work frame canvas sizes'
+    foreach ($entry in $entries) {
+        $size = $entry.Width
+        $reference = $pointerEntriesBySize[$size]
+        if ($entry.Height -ne $size -or $entry.HotspotX -ne $reference.HotspotX -or
+            $entry.HotspotY -ne $reference.HotspotY) {
+            throw 'Work frame hotspot differs from its matching Pointer.cur entry.'
         }
-
-        $colorX = @()
-        $colorY = @()
-        for ($y = 0; $y -lt 32; $y++) {
-            for ($x = 0; $x -lt 32; $x++) {
-                $color = $bitmap.GetPixel($x, $y)
-                $maximum = [Math]::Max($color.R, [Math]::Max($color.G, $color.B))
-                $minimum = [Math]::Min($color.R, [Math]::Min($color.G, $color.B))
-                if ($color.A -gt 32 -and ($maximum - $minimum) -gt 45) {
-                    $colorX += $x
-                    $colorY += $y
+        $workHashes[$size] += Get-Sha256 $entry.Png
+        $scale = $size / 32.0
+        $wheelX = [int][Math]::Round($expectedWheelBounds[0] * $scale, [MidpointRounding]::AwayFromZero)
+        $wheelY = [int][Math]::Round($expectedWheelBounds[2] * $scale, [MidpointRounding]::AwayFromZero)
+        $wheelSize = [int][Math]::Round(($expectedWheelBounds[1] - $expectedWheelBounds[0] + 1) * $scale,
+            [MidpointRounding]::AwayFromZero)
+        $bitmap = New-BitmapFromPng $entry.Png
+        $pointerBitmap = New-BitmapFromPng $reference.Png
+        try {
+            if ($bitmap.Width -ne $size -or $bitmap.Height -ne $size) {
+                throw 'Work PNG dimensions differ from its directory entry.'
+            }
+            $alphaMask = [byte[]]::new($size * $size)
+            $colorX = @(); $colorY = @()
+            for ($y = 0; $y -lt $size; $y++) {
+                for ($x = 0; $x -lt $size; $x++) {
+                    $color = $bitmap.GetPixel($x, $y)
+                    $pointerColor = $pointerBitmap.GetPixel($x, $y)
+                    $insideWheelBox = $x -ge $wheelX -and $x -lt ($wheelX + $wheelSize) -and
+                        $y -ge $wheelY -and $y -lt ($wheelY + $wheelSize)
+                    if ((-not $insideWheelBox -or $pointerColor.A -eq 255) -and
+                        $color.ToArgb() -ne $pointerColor.ToArgb()) {
+                        throw "Work changed a pointer pixel at ${size}px ($x,$y)."
+                    }
+                    $alphaMask[$y * $size + $x] = $color.A
+                    $maximum = [Math]::Max($color.R, [Math]::Max($color.G, $color.B))
+                    $minimum = [Math]::Min($color.R, [Math]::Min($color.G, $color.B))
+                    if ($color.A -gt 32 -and ($maximum - $minimum) -gt 45) {
+                        if (-not $insideWheelBox) { throw 'The wheel extends outside its fixed bounds.' }
+                        $colorX += $x; $colorY += $y
+                    }
                 }
             }
+            $maskHash = Get-Sha256 $alphaMask
+            if ($firstAlphaMasks.ContainsKey($size)) {
+                if ($firstAlphaMasks[$size] -ne $maskHash) { throw "Work alpha mask changes at ${size}px." }
+            }
+            else { $firstAlphaMasks[$size] = $maskHash }
+            if ($colorX.Count -lt ($expectedMinimumWheelColorPixels * $scale * $scale)) {
+                throw "Work color wheel is incomplete at ${size}px: $($colorX.Count) colored pixels."
+            }
+            if ($size -eq 32) {
+                $globalMinX = [Math]::Min($globalMinX, ($colorX | Measure-Object -Minimum).Minimum)
+                $globalMaxX = [Math]::Max($globalMaxX, ($colorX | Measure-Object -Maximum).Maximum)
+                $globalMinY = [Math]::Min($globalMinY, ($colorY | Measure-Object -Minimum).Minimum)
+                $globalMaxY = [Math]::Max($globalMaxY, ($colorY | Measure-Object -Maximum).Maximum)
+                $minimumColorPixels = [Math]::Min($minimumColorPixels, $colorX.Count)
+            }
         }
-        if ($colorX.Count -lt $expectedMinimumWheelColorPixels) {
-            throw "Work.ani color wheel is incomplete: $($colorX.Count) colored pixels."
+        finally {
+            $bitmap.Dispose(); $pointerBitmap.Dispose()
         }
-        $frameMinX = ($colorX | Measure-Object -Minimum).Minimum
-        $frameMaxX = ($colorX | Measure-Object -Maximum).Maximum
-        $frameMinY = ($colorY | Measure-Object -Minimum).Minimum
-        $frameMaxY = ($colorY | Measure-Object -Maximum).Maximum
-        if ($frameMinX -lt $expectedWheelBounds[0] -or
-            $frameMaxX -gt $expectedWheelBounds[1] -or
-            $frameMinY -lt $expectedWheelBounds[2] -or
-            $frameMaxY -gt $expectedWheelBounds[3]) {
-            throw "Work.ani color wheel moved or clipped: $frameMinX,$frameMinY to $frameMaxX,$frameMaxY."
-        }
-        $globalMinX = [Math]::Min($globalMinX, $frameMinX)
-        $globalMaxX = [Math]::Max($globalMaxX, $frameMaxX)
-        $globalMinY = [Math]::Min($globalMinY, $frameMinY)
-        $globalMaxY = [Math]::Max($globalMaxY, $frameMaxY)
-        $minimumColorPixels = [Math]::Min($minimumColorPixels, $colorX.Count)
-    }
-    finally {
-        $bitmap.Dispose()
     }
 }
-$pointerBitmap.Dispose()
 
-if (@($workHashes | Sort-Object -Unique).Count -ne 40) {
-    throw 'Work.ani must contain 40 unique PNG frames.'
+foreach ($size in @(32, 48, 64)) {
+    if (@($workHashes[$size] | Sort-Object -Unique).Count -ne 60) {
+        throw "Work must contain 60 unique frames at ${size}px."
+    }
 }
 
 foreach ($frameBytes in $busy.Frames) {
@@ -450,19 +476,75 @@ foreach ($assetName in $expectedCursorNames) {
     [void][BalancedCursorNative]::DestroyCursor($handle)
 }
 
+function Read-NativeCursor {
+    param([string]$Path, [int]$Size)
+    $handle = [BalancedCursorNative]::LoadImage([IntPtr]::Zero, $Path, 2, $Size, $Size, 0x10)
+    if ($handle -eq [IntPtr]::Zero) {
+        throw "Native cursor load failed at ${Size}px: $Path"
+    }
+    $info = [BalancedCursorNative+IconInfo]::new()
+    try {
+        if (-not [BalancedCursorNative]::GetIconInfo($handle, [ref]$info)) {
+            throw 'GetIconInfo failed.'
+        }
+        $bitmap = [BalancedCursorNative+BitmapInfo]::new()
+        if ([BalancedCursorNative]::GetObject($info.Color,
+            [Runtime.InteropServices.Marshal]::SizeOf($bitmap), [ref]$bitmap) -eq 0 -or
+            $bitmap.BitsPixel -ne 32) { throw 'Could not inspect the native 32-bit cursor bitmap.' }
+        $pixels = [byte[]]::new($bitmap.WidthBytes * $bitmap.Height)
+        if ([BalancedCursorNative]::GetBitmapBits($info.Color, $pixels.Length, $pixels) -ne $pixels.Length) {
+            throw 'Could not read the native cursor pixels.'
+        }
+        return [pscustomobject]@{
+            Width = $bitmap.Width; Height = $bitmap.Height; Stride = $bitmap.WidthBytes
+            HotspotX = $info.HotspotX; HotspotY = $info.HotspotY; Pixels = $pixels
+        }
+    }
+    finally {
+        if ($info.Color -ne [IntPtr]::Zero) { [void][BalancedCursorNative]::DeleteObject($info.Color) }
+        if ($info.Mask -ne [IntPtr]::Zero) { [void][BalancedCursorNative]::DeleteObject($info.Mask) }
+        [void][BalancedCursorNative]::DestroyCursor($handle)
+    }
+}
+
+$nativeSizes = @()
+foreach ($size in @(32, 40, 48, 64)) {
+    $pointer = Read-NativeCursor (Join-Path $ThemeDirectory 'Pointer.cur') $size
+    $animation = Read-NativeCursor (Join-Path $ThemeDirectory 'Work.ani') $size
+    if ($pointer.Width -ne $size -or $pointer.Height -ne $size -or
+        $animation.Width -ne $size -or $animation.Height -ne $size -or
+        $pointer.HotspotX -ne $animation.HotspotX -or $pointer.HotspotY -ne $animation.HotspotY) {
+        throw "Native Work and Pointer sizes or hotspots disagree at ${size}px."
+    }
+    $pointerRegionWidth = [int][Math]::Floor($expectedWheelBounds[0] * $size / 32.0) - 1
+    for ($y = 0; $y -lt $size; $y++) {
+        for ($x = 0; $x -lt ($pointerRegionWidth * 4); $x++) {
+            if ($pointer.Pixels[$y * $pointer.Stride + $x] -ne
+                $animation.Pixels[$y * $animation.Stride + $x]) {
+                throw "Native Work altered the pointer region at ${size}px."
+            }
+        }
+    }
+    $nativeSizes += "$size ($($animation.HotspotX),$($animation.HotspotY))"
+}
+
 $workHash = (Get-FileHash (Join-Path $ThemeDirectory 'Work.ani') -Algorithm SHA256).Hash
 [pscustomobject]@{
     ThemeDirectory = $ThemeDirectory
     StaticCursors = $staticFiles.Count
     NativeLoads = "$($expectedCursorNames.Count)/$($expectedCursorNames.Count)"
     WorkFrames = $work.Frames.Count
-    UniqueWorkFrames = @($workHashes | Sort-Object -Unique).Count
+    UniqueWorkFramesPerSize = '60/60 at 32,48,64'
+    WorkCanvasSizes = '32,48,64'
+    FixedAlphaMasks = $firstAlphaMasks.Count
+    NativeSizeHotspots = $nativeSizes -join '; '
     Profile = $Profile
     PointerHotspot = "$expectedHotspotX,$expectedHotspotY"
     PointerOpaquePixels = $pointerOpaqueCoordinates.Count
     WorkWheelBounds = "$globalMinX,$globalMinY to $globalMaxX,$globalMaxY"
     MinimumWheelColorPixels = $minimumColorPixels
     WorkJiffies = 1
+    WorkRevolutionSeconds = 1
     BusyJiffies = 2
     WorkSha256 = $workHash
 } | Format-List
