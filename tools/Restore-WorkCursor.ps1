@@ -4,7 +4,9 @@ param([string]$BackupDirectory = $PSScriptRoot)
 $ErrorActionPreference = 'Stop'
 $state = Get-Content -LiteralPath (Join-Path $BackupDirectory 'cursor-settings.json') -Raw |
     ConvertFrom-Json
-if (-not $PSCmdlet.ShouldProcess('Current Windows cursor scheme', 'Restore the backed-up Work cursor')) {
+$restoreNames = @('', 'AppStarting', 'SchemeSource')
+if ($state.IncludeBusy) { $restoreNames += 'Wait' }
+if (-not $PSCmdlet.ShouldProcess('Current Windows cursor scheme', 'Restore the backed-up cursor animations')) {
     return
 }
 if (-not ('WorkCursorRefresh' -as [type])) {
@@ -22,7 +24,7 @@ public static class WorkCursorRefresh {
 $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Control Panel\Cursors', $true)
 $schemes = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Control Panel\Cursors\Schemes', $true)
 try {
-    foreach ($item in @($state.Values | Where-Object { $_.Name -in @('', 'AppStarting', 'SchemeSource') })) {
+    foreach ($item in @($state.Values | Where-Object { $_.Name -in $restoreNames })) {
         if ($item.Exists) {
             $kind = [Microsoft.Win32.RegistryValueKind]$item.Kind
             $value = if ($kind -eq [Microsoft.Win32.RegistryValueKind]::DWord) {
@@ -39,7 +41,7 @@ try {
     if (-not [WorkCursorRefresh]::SystemParametersInfo(0x57, 0, [IntPtr]::Zero, 2)) {
         throw "Windows cursor refresh failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
     }
-    foreach ($item in @($state.Values | Where-Object { $_.Name -in @('', 'AppStarting', 'SchemeSource') })) {
+    foreach ($item in @($state.Values | Where-Object { $_.Name -in $restoreNames })) {
         if ($item.Exists -and
             ($key.GetValue([string]$item.Name, $null,
                 [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) -ne $item.Value -or
@@ -52,4 +54,4 @@ try {
     }
 }
 finally { $key.Dispose(); $schemes.Dispose() }
-Write-Output "Restored previous Windows Work cursor. Backup retained: $BackupDirectory"
+Write-Output "Restored previous Windows cursor animations. Backup retained: $BackupDirectory"

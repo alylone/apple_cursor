@@ -752,31 +752,30 @@ function New-BitmapAnimation {
     if (-not $isWork -and $FramePngFiles.Count -ne 40) {
         throw "Expected 40 animation PNGs, found $($FramePngFiles.Count)."
     }
-    if ($isWork -and $FramePngFiles.Count -lt 1) {
-        throw 'The Work animation requires a canonical wheel PNG.'
+    if ($FramePngFiles.Count -lt 1) {
+        throw 'The animation requires a canonical wheel PNG.'
     }
     $frameCount = if ($isWork) { 60 } else { $FramePngFiles.Count }
-    $canvasSize = if ($isWork) { 0 } else { 32 }
-    # Keep Busy.ani byte-for-byte compatible; its rate chunk already sets 2 jiffies.
-    $headerRate = if ($isWork) { $FrameJiffies } else { 1 }
+    $canvasSize = 0
+    $headerRate = $FrameJiffies
+    if (-not ('WorkAnimationRenderer' -as [type])) {
+        $drawingReferences = @(
+            [Drawing.Bitmap].Assembly.Location,
+            [Drawing.Color].Assembly.Location
+            # Newer PowerShell runtimes split GDI+ into additional assemblies.
+            [AppDomain]::CurrentDomain.GetAssemblies() |
+                Where-Object { $_.GetName().Name -like 'System.Private.Windows.*' } |
+                ForEach-Object Location
+        ) | Select-Object -Unique
+        Add-Type -Path (Join-Path $PSScriptRoot 'WorkAnimationRenderer.cs') `
+            -ReferencedAssemblies $drawingReferences
+    }
+    $renderer = [WorkAnimationRenderer]::new([IO.File]::ReadAllBytes($FramePngFiles[0]))
     if ($isWork) {
-        if (-not ('WorkAnimationRenderer' -as [type])) {
-            $drawingReferences = @(
-                [Drawing.Bitmap].Assembly.Location,
-                [Drawing.Color].Assembly.Location
-                # Newer PowerShell runtimes split GDI+ into additional assemblies.
-                [AppDomain]::CurrentDomain.GetAssemblies() |
-                    Where-Object { $_.GetName().Name -like 'System.Private.Windows.*' } |
-                    ForEach-Object Location
-            ) | Select-Object -Unique
-            Add-Type -Path (Join-Path $PSScriptRoot 'WorkAnimationRenderer.cs') `
-                -ReferencedAssemblies $drawingReferences
-        }
-        $renderer = [WorkAnimationRenderer]::new([IO.File]::ReadAllBytes($FramePngFiles[0]))
         $pointerEntries = @(Read-CursorEntries ([IO.File]::ReadAllBytes($PointerCursorPath)) |
-            Where-Object Width -in @(32, 48, 64))
-        if ($pointerEntries.Count -ne 3) {
-            throw 'Work requires the 32px, 48px and 64px Pointer.cur entries.'
+            Where-Object Width -in @(32, 48, 64, 96, 128, 256))
+        if ($pointerEntries.Count -ne 6) {
+            throw 'Work requires all six standard Pointer.cur resource sizes.'
         }
     }
 
@@ -785,13 +784,18 @@ function New-BitmapAnimation {
         $frameListStream.Write([Text.Encoding]::ASCII.GetBytes('fram'), 0, 4)
         for ($frameIndex = 0; $frameIndex -lt $frameCount; $frameIndex++) {
             if (-not $isWork) {
-                $frameArguments = @{
-                    Png = [IO.File]::ReadAllBytes($FramePngFiles[$frameIndex])
-                    ArtworkHotspotX = $ArtworkHotspotX
-                    ArtworkHotspotY = $ArtworkHotspotY
-                    ArtworkSize = $ArtworkSize
+                $busyEntries = @()
+                foreach ($mapping in $sizeMappings) {
+                    $busyEntries += [pscustomobject]@{
+                        Width = $mapping.Target
+                        Height = $mapping.Target
+                        HotspotX = [int][Math]::Floor($mapping.Artwork / 2.0)
+                        HotspotY = [int][Math]::Floor($mapping.Artwork / 2.0)
+                        Png = $renderer.RenderBusy($mapping.Target, $mapping.Artwork,
+                            (360.0 * $frameIndex / $frameCount))
+                    }
                 }
-                $cursorFrame = Convert-BitmapAnimationFrame @frameArguments
+                $cursorFrame = New-CursorBytes $busyEntries
             }
             else {
                 $frameArguments = @{
