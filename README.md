@@ -67,11 +67,13 @@ The upstream `left_ptr_watch` artwork uses a reduced arrow and a blue
 four-section disc. This fork's Balanced `Work.ani` is composed during the
 Windows build instead of replacing the upstream SVG files:
 
-- The regular `left_ptr.png` is independently scaled exactly like
-  `Pointer.cur`; the arrow is not compressed as part of a combined image.
-- The six-blade gradient artwork from the repository's `wait-*.png` frames is
-  used as a separate foreground layer. No frames are copied from another
-  cursor package.
+- Every frame contains 32/48/64-pixel resources. Each resource reuses the
+  matching `Pointer.cur` pixels and hotspot, including the antialiased outline
+  and shadow. The pointer is never scaled again during composition.
+- The six-blade gradient artwork from `wait-01.png` is rotated around one
+  fixed center, using four samples per axis and a fixed circular coverage
+  mask. Only the wheel's colors rotate; its alpha boundary stays identical
+  across all frames. No frames are copied from another cursor package.
 - The composition is visually inspired by the working-in-background style in
   [`antiden/macOS-cursors-for-Windows`](https://github.com/antiden/macOS-cursors-for-Windows),
   while retaining this project's own shapes, gradients, pointer, and shadow.
@@ -84,8 +86,14 @@ Windows build instead of replacing the upstream SVG files:
   beyond the canvas.
 - The wheel is the foreground layer. This is intentional: do not move it
   behind the pointer, where the arrow would cut into the color disc.
-- `Work.ani` has 40 unique frames at 1 jiffy per frame, approximately 0.67
-  seconds per revolution.
+- `Work.ani` has 60 unique frames at each resource size, at 1 jiffy per
+  frame: one second per revolution. This is slower than the previous
+  40-frame, approximately 0.67-second animation while retaining 60 steps
+  per second.
+- Windows-native loading at 32/40/48/64 pixels verifies both the hotspot
+  and pointer-region pixels against `Pointer.cur`. In particular, the Large
+  48-pixel hotspot is `(12,5)` for both states; the older single-size Work
+  animation became `(12,6)` when enlarged.
 - `Busy.ani` remains the repository's standalone wait animation at 2 jiffies
   per frame.
 
@@ -98,7 +106,7 @@ preserve these decisions unless the fork owner explicitly requests otherwise:
 2. Keep Balanced Normal Pointer artwork at 22 pixels on the 32-pixel Windows
    canvas, matching the visible size of the default Windows pointer without
    distorting the macOS artwork. Keep Balanced Large at the former 27 pixels.
-3. Build Work from the same independently scaled pointer used by Pointer.cur.
+3. Build Work by copying the matching Pointer.cur resource's pixels exactly.
 4. Keep the Work pointer hotspot identical to Pointer.cur.
 5. Keep the Work color wheel on the right as a foreground layer, outside the
    opaque pointer body, with no clipping at any rotation angle.
@@ -131,6 +139,30 @@ Install `themes/macOS-Balanced-Windows/install.inf`, then select
 Both schemes can be installed at the same time. When replacing an already
 active build, switch to another scheme and apply it before switching back;
 Windows otherwise may continue displaying a cached ANI file.
+
+### Apply only the repaired Work animation on this computer
+
+For an existing matching Balanced Large scheme, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/Set-WorkCursorFix.ps1 -Profile Balanced-Large
+```
+
+Use `-Profile Balanced` for Normal. The script first verifies that the active
+pointer matches the selected build and runs the package validator. It then
+creates a fresh timestamped directory under
+`%LOCALAPPDATA%\apple_cursor\work-fix`, backs up the previous Work animation,
+Pointer cursor, registry settings and hashes, and saves a rollback script.
+
+The repaired Work file lives in that user directory. An independent
+`(Work Fixed <timestamp>)` scheme retains the current cursor paths with only
+the Work slot changed. The script activates it, refreshes Windows cursors and
+checks the real system Arrow and Work dimensions and hotspots. If application
+fails, it restores the previous settings. Administrator access is not needed.
+
+To roll back, run `Restore-WorkCursor.ps1` inside the reported backup directory.
+Both scripts support `-WhatIf`. Keep the timestamped directory while the fixed
+scheme is in use; it contains the active animation as well as its backup.
 
 To rebuild Compact from a non-default source directory:
 
@@ -183,18 +215,24 @@ Both Balanced profiles were checked with the following invariants:
 | Static cursor files | 19 | 19 |
 | ANI files | 2 (`Work.ani`, `Busy.ani`) | 2 (`Work.ani`, `Busy.ani`) |
 | Native Windows cursor loads | 21/21 passed | 21/21 passed |
-| Work frame count | 40/40, all unique | 40/40, all unique |
-| Work canvas and hotspot | 32x32, `(6,3)` | 32x32, `(8,4)` |
+| Work frame count | 60/60 per size, all unique | 60/60 per size, all unique |
+| Work canvases | 32/48/64 | 32/48/64 |
+| Work 32px hotspot | `(6,3)` | `(8,4)` |
+| Native 48px Arrow/Work hotspot | `(10,4)` / `(10,4)` | `(12,5)` / `(12,5)` |
 | Pointer body preservation | 50/50 opaque pixels | 85/85 opaque pixels |
 | Work color-wheel bounds | `x=16...25, y=7...16` | `x=20...30, y=9...19` |
 | Work frame rate | 1 jiffy per frame | 1 jiffy per frame |
+| Work revolution | 1 second | 1 second |
+| Fixed alpha masks | All 60 frames, all 3 sizes | All 60 frames, all 3 sizes |
+| Exact pointer preservation | All pixels outside the wheel and all opaque body pixels | All pixels outside the wheel and all opaque body pixels |
 | Busy frame rate | 2 jiffies per frame | 2 jiffies per frame |
 | Deterministic regeneration | Passed | Passed |
-| Work.ani SHA-256 | `67AF77B240A2495D5E3719100192BE40411AB68D351A8ED673BD72C7F5127C64` | `1CCE5517446776506A9D876FFFE5BA23974F838F663FF0BB623AD3CB38C04423` |
+| Work.ani SHA-256 | `06C9E26C643CDE5C6FCDC5292BB4044ED8C16469DF7367DC8C7D669E1BA5704B` | `1490AC3C6B691AD15BDBF9D5D154A8B291CEC1088E78982846BA50BCFBF2C9AF` |
 
 The SHA-256 value records the build produced in the environment above. A
-different rasterizer or dependency version may legitimately change PNG
-encoding while preserving the pixel-level design invariants.
+different rasterizer, dependency version or .NET runtime may change PNG
+encoding or rounded wheel color samples while preserving the validated
+pointer pixels, fixed alpha masks and layout invariants.
 
 ## Notes
 
